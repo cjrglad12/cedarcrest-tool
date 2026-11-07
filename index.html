@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#14281d" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Cedar Crest" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-180.png" />
+    <title>Cedar Crest Planner</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="top"></header>
+      <div id="view"><div id="loading">Loading Cedar Crest…</div></div>
+      <div id="viewbtns"></div>
+      <section id="sheet">
+        <button id="grip" aria-label="Expand or collapse panel"><span></span></button>
+        <nav id="tabs"></nav>
+        <div id="panel"></div>
+      </section>
+      <div id="toast" role="status"></div>
+      <div id="modal" hidden></div>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
