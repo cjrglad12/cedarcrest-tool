@@ -35,6 +35,7 @@ export interface CourseData {
   metersPerDeg: { x: number; y: number };
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   terrain: { file: string; cols: number; rows: number; cell: number; minX: number; minY: number; minH: number; maxH: number; scale: number };
+  canopy?: { file: string; source: string }; // tree heights (m) on the terrain grid
   boundary: XY[][];
   holes: Hole[];
   features: Feature[];
@@ -78,17 +79,24 @@ export function ringCentroid(ring: XY[]): XY {
   return [cx / (3 * a), cy / (3 * a)];
 }
 
+/** Trees at least this tall (m) count as trees. */
+export const TREE_M = 4;
+
 const LIE_PRIORITY: Record<string, number> = { water: 0, bunker: 1, green: 2, tee: 3, fairway: 4, wood: 5, building: 6, rough: 7, range: 8 };
 
 export class Course {
   data: CourseData;
   heights: Float32Array;
+  canopy: Uint8Array;
   features: Feature[];
+  /** Which hole each fairway, green and tee belongs to. */
+  owner = new Map<string, number>();
   private byId = new Map<string, Feature>();
   private boundary: Feature;
 
-  constructor(data: CourseData, raw: Uint16Array) {
+  constructor(data: CourseData, raw: Uint16Array, canopy?: Uint8Array) {
     this.data = data;
+    this.canopy = canopy ?? new Uint8Array(raw.length);
     const t = data.terrain;
     this.heights = new Float32Array(raw.length);
     for (let i = 0; i < raw.length; i++) this.heights[i] = raw[i] * t.scale; // height above minH
@@ -97,12 +105,24 @@ export class Course {
       .sort((a, b) => (LIE_PRIORITY[a.kind] ?? 9) - (LIE_PRIORITY[b.kind] ?? 9));
     for (const f of this.features) this.byId.set(f.id, f);
     this.boundary = { id: 'boundary', kind: 'rough', rings: data.boundary, holes: [], bbox: bboxOf(data.boundary) };
+    for (const f of this.features) {
+      if (f.kind !== 'fairway' && f.kind !== 'green' && f.kind !== 'tee') continue;
+      const c = ringCentroid(f.rings[0]);
+      let best = Infinity;
+      for (const h of data.holes) {
+        const d = h.greenId === f.id ? -1 : distToLine(c, [...h.tees.map((t) => t.center).slice(0, 1), ...h.line]);
+        if (d < best) { best = d; this.owner.set(f.id, h.ref); }
+      }
+    }
   }
 
   static async load(base = './data/'): Promise<Course> {
     const data: CourseData = await (await fetch(base + 'course.json')).json();
-    const buf = await (await fetch(base + data.terrain.file)).arrayBuffer();
-    return new Course(data, new Uint16Array(buf));
+    const [buf, can] = await Promise.all([
+      fetch(base + data.terrain.file).then((r) => r.arrayBuffer()),
+      data.canopy ? fetch(base + data.canopy.file).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null) : null,
+    ]);
+    return new Course(data, new Uint16Array(buf), can ? new Uint8Array(can) : undefined);
   }
 
   get holes() { return this.data.holes; }
@@ -120,6 +140,20 @@ export class Course {
     return (H[i] * (1 - fx) + H[i + 1] * fx) * (1 - fy) + (H[i + t.cols] * (1 - fx) + H[i + t.cols + 1] * fx) * fy;
   }
 
+  /** Tree height in meters at a point (0 = open). */
+  treeAt(x: number, y: number): number {
+    const t = this.data.terrain;
+    const c = Math.round((x - t.minX) / t.cell), r = Math.round((y - t.minY) / t.cell);
+    if (c < 0 || r < 0 || c >= t.cols || r >= t.rows) return 0;
+    return this.canopy[r * t.cols + c];
+  }
+
+  /** The feature (fairway, green, bunker…) under a point, if any. */
+  featureAt(p: XY): Feature | null {
+    for (const f of this.features) if (f.kind !== 'range' && pointInFeature(p, f)) return f;
+    return null;
+  }
+
   kindAt(p: XY): Kind | 'ob' {
     if (!pointInFeature(p, this.boundary)) return 'ob';
     for (const f of this.features) if (f.kind !== 'range' && pointInFeature(p, f)) return f.kind;
@@ -129,6 +163,8 @@ export class Course {
   /** Lie for strokes-gained purposes. `green` only counts as green for this hole's green. */
   lieAt(p: XY, hole?: Hole): Lie {
     const k = this.kindAt(p);
+    // Under trees counts as a recovery shot, except on greens, tees, sand and water.
+    if ((k === 'rough' || k === 'fairway' || k === 'wood' || k === 'range') && this.treeAt(p[0], p[1]) >= TREE_M) return 'recovery';
     switch (k) {
       case 'ob': return 'ob';
       case 'water': return 'water';
@@ -144,6 +180,19 @@ export class Course {
   }
 
   greenOf(hole: Hole) { return this.feature(hole.greenId); }
+
+  /** True if the point is on a fairway, green or tee that belongs to a different hole. */
+  onOtherHole(p: XY, hole: Hole): boolean {
+    const f = this.featureAt(p);
+    if (!f) return false;
+    const o = this.owner.get(f.id);
+    return o !== undefined && o !== hole.ref;
+  }
+
+  /** Distance (m) from a point to this hole's line of play (tees through green). */
+  offLine(p: XY, hole: Hole): number {
+    return distToLine(p, [...hole.tees.map((t) => t.center).slice(0, 1), ...hole.line, hole.pin]);
+  }
 
   /** Distances (m) from a point to the front, center and back of the green along the line to the pin. */
   greenDistances(hole: Hole, from: XY, pin: XY = hole.pin) {
@@ -213,6 +262,18 @@ export class Course {
     const { origin, metersPerDeg } = this.data;
     return { lat: origin.lat + p[1] / metersPerDeg.y, lon: origin.lon + p[0] / metersPerDeg.x };
   }
+}
+
+function distToLine(p: XY, pts: XY[]): number {
+  let best = Infinity;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L)) : 0;
+    best = Math.min(best, Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t));
+  }
+  return best;
 }
 
 function bboxOf(rings: XY[][]): [number, number, number, number] {

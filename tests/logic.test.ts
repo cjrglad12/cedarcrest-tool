@@ -9,7 +9,8 @@ import { freshState, migrate, DEFAULT_BAG, HoleRec } from '../src/store';
 
 const data: CourseData = JSON.parse(readFileSync(new URL('../public/data/course.json', import.meta.url), 'utf8'));
 const raw = readFileSync(new URL('../public/data/terrain.bin', import.meta.url));
-const course = new Course(data, new Uint16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2));
+const can = readFileSync(new URL('../public/data/canopy.bin', import.meta.url));
+const course = new Course(data, new Uint16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2), new Uint8Array(can.buffer, can.byteOffset, can.byteLength));
 
 describe('course data', () => {
   it('has all 18 holes with tees and greens', () => {
@@ -49,6 +50,23 @@ describe('course data', () => {
     expect(dist(p, back)).toBeLessThan(0.01);
     expect(ll.lat).toBeGreaterThan(32.7);
     expect(ll.lon).toBeLessThan(-96.7);
+  });
+});
+
+describe('trees and holes', () => {
+  it('loads the canopy map', () => {
+    let trees = 0;
+    for (const v of course.canopy) if (v >= 4) trees++;
+    expect(trees / course.canopy.length).toBeGreaterThan(0.1);
+  });
+  it('assigns each green to its own hole', () => {
+    for (const h of course.holes) expect(course.owner.get(h.greenId!)).toBe(h.ref);
+  });
+  it('treats ground under tall trees as a recovery lie', () => {
+    const t = course.data.terrain;
+    const i = course.canopy.findIndex((v, k) => v >= 10 && course.kindAt([t.minX + (k % t.cols) * t.cell, t.minY + Math.floor(k / t.cols) * t.cell]) === 'rough');
+    const p: [number, number] = [t.minX + (i % t.cols) * t.cell, t.minY + Math.floor(i / t.cols) * t.cell];
+    expect(course.lieAt(p)).toBe('recovery');
   });
 });
 
@@ -104,6 +122,14 @@ describe('advice', () => {
     expect(Math.abs(club.yds - yds)).toBeLessThan(35);
     expect(opts[0].expected).toBeGreaterThan(2.5);
     expect(opts[0].expected).toBeLessThan(4.5);
+  });
+  it('keeps planned shots out of trees and off other holes', () => {
+    for (const h of course.holes) {
+      for (const s of buildPlan(ctxFor(h.ref)).steps) {
+        expect(course.lieAt(s.target, h), `hole ${h.ref}`).not.toBe('recovery');
+        expect(course.onOtherHole(s.target, h), `hole ${h.ref}`).toBe(false);
+      }
+    }
   });
   it('builds a plan that reaches the green on every hole', () => {
     for (const h of course.holes) {

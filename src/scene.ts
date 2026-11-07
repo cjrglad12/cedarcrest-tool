@@ -3,7 +3,7 @@
 // the tee-to-green direction points "into the screen" (−Z).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Course, Hole, XY, Feature, dist, bearing, pointInFeature, YD } from './course';
+import { Course, Hole, XY, Feature, dist, bearing, YD, TREE_M } from './course';
 
 export interface Arc { from: XY; to: XY; color: string; label?: string; dashed?: boolean; width?: number }
 export interface Ellipse { center: XY; along: number; across: number; bearing: number; color: string }
@@ -229,42 +229,56 @@ export class HoleScene {
     for (const line of this.course.data.paths) {
       g.beginPath(); line.forEach((p, i) => { const [a, b] = tx(p); if (i) g.lineTo(a, b); else g.moveTo(a, b); }); g.stroke();
     }
+    // Tree shade from the canopy map
+    {
+      const t = this.course.data.terrain;
+      g.fillStyle = 'rgba(30,62,28,0.78)';
+      const c0 = Math.max(0, Math.floor((r.minX - t.minX) / t.cell)), c1 = Math.min(t.cols - 1, Math.ceil((r.maxX - t.minX) / t.cell));
+      const r0 = Math.max(0, Math.floor((r.minY - t.minY) / t.cell)), r1 = Math.min(t.rows - 1, Math.ceil((r.maxY - t.minY) / t.cell));
+      for (let row = r0; row <= r1; row++) for (let col = c0; col <= c1; col++) {
+        if (this.course.canopy[row * t.cols + col] < TREE_M) continue;
+        const [px, py] = tx([t.minX + col * t.cell - t.cell / 2, t.minY + row * t.cell + t.cell / 2]);
+        g.fillRect(px, py, t.cell * ppm + 0.5, t.cell * ppm + 0.5);
+      }
+    }
     // OB line
     g.setLineDash([3 * ppm, 3 * ppm]); g.strokeStyle = 'rgba(255,255,255,0.85)'; g.lineWidth = 0.7 * ppm;
     path(this.course.data.boundary); g.stroke(); g.setLineDash([]);
     return cv;
   }
 
+  /** Trees from the canopy height map: one tree per ~6 m patch of canopy, at its measured height. */
   private buildTrees(r: Region): THREE.Object3D {
     const grp = new THREE.Group();
     const rnd = mulberry(Math.round(r.minX * 31 + r.minY));
-    const spots: { p: XY; s: number }[] = [];
-    const woods = this.course.features.filter((f) => f.kind === 'wood');
-    for (const f of woods) {
-      const b = f.bbox!;
-      const x0 = Math.max(b[0], r.minX), x1 = Math.min(b[2], r.maxX), y0 = Math.max(b[1], r.minY), y1 = Math.min(b[3], r.maxY);
-      if (x0 >= x1 || y0 >= y1) continue;
-      const tries = Math.min(5000, ((x1 - x0) * (y1 - y0)) / 55);
-      for (let i = 0; i < tries && spots.length < 3500; i++) {
-        const p: XY = [x0 + rnd() * (x1 - x0), y0 + rnd() * (y1 - y0)];
-        if (pointInFeature(p, f)) spots.push({ p, s: 0.75 + rnd() * 0.6 });
+    const spots: { p: XY; h: number }[] = [];
+    const S = 6;
+    for (let y = r.minY; y < r.maxY; y += S) for (let x = r.minX; x < r.maxX; x += S) {
+      let best = 0, bx = 0, by = 0;
+      for (let dy = 0; dy < S; dy += 2) for (let dx = 0; dx < S; dx += 2) {
+        const h = this.course.treeAt(x + dx, y + dy);
+        if (h > best) { best = h; bx = x + dx; by = y + dy; }
       }
+      if (best >= TREE_M) spots.push({ p: [bx + (rnd() - 0.5) * 2, by + (rnd() - 0.5) * 2], h: best });
     }
-    for (const t of this.course.data.trees) if (t[0] > r.minX && t[0] < r.maxX && t[1] > r.minY && t[1] < r.maxY) spots.push({ p: t, s: 1 });
+    for (const t of this.course.data.trees) if (t[0] > r.minX && t[0] < r.maxX && t[1] > r.minY && t[1] < r.maxY) spots.push({ p: t, h: 10 });
     if (!spots.length) return grp;
-    const canopyGeo = new THREE.IcosahedronGeometry(1, 0);
-    canopyGeo.scale(4.5, 5.5, 4.5);
-    canopyGeo.translate(0, 8, 0);
-    const trunkGeo = new THREE.CylinderGeometry(0.35, 0.5, 4, 5);
-    trunkGeo.translate(0, 2, 0);
+    const canopyGeo = new THREE.IcosahedronGeometry(1, 1);
+    const trunkGeo = new THREE.CylinderGeometry(0.6, 1, 1, 5);
+    trunkGeo.translate(0, 0.5, 0);
     const canopy = new THREE.InstancedMesh(canopyGeo, new THREE.MeshLambertMaterial({ flatShading: true }), spots.length);
     const trunk = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: 0x5b4632 }), spots.length);
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), c = new THREE.Color();
-    spots.forEach(({ p, s }, i) => {
-      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rnd() * Math.PI);
-      m.compose(new THREE.Vector3(p[0], this.y(p) - 0.3, -p[1]), q, new THREE.Vector3(s, s, s));
-      canopy.setMatrixAt(i, m); trunk.setMatrixAt(i, m);
-      canopy.setColorAt(i, c.setHSL(0.26 + rnd() * 0.06, 0.45 + rnd() * 0.2, 0.2 + rnd() * 0.1));
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), c = new THREE.Color(), up = new THREE.Vector3(0, 1, 0);
+    spots.forEach(({ p, h }, i) => {
+      const ground = this.y(p) - 0.3;
+      const crownR = Math.max(2.5, Math.min(7, h * 0.38)) * (0.85 + rnd() * 0.3);
+      const crownV = h * 0.42;
+      q.setFromAxisAngle(up, rnd() * Math.PI);
+      m.compose(new THREE.Vector3(p[0], ground + h - crownV, -p[1]), q, new THREE.Vector3(crownR, crownV, crownR));
+      canopy.setMatrixAt(i, m);
+      m.compose(new THREE.Vector3(p[0], ground, -p[1]), q, new THREE.Vector3(0.35 + h * 0.02, h - crownV, 0.35 + h * 0.02));
+      trunk.setMatrixAt(i, m);
+      canopy.setColorAt(i, c.setHSL(0.24 + rnd() * 0.08, 0.38 + rnd() * 0.2, 0.17 + rnd() * 0.09));
     });
     grp.add(canopy, trunk);
     return grp;

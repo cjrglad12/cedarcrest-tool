@@ -153,6 +153,37 @@ function readTiffF32(buf) {
   return { width, height, data: out };
 }
 
+// ---------- tree canopy ----------
+// Heights in whole meters on the same 2 m grid as the terrain (row 0 = south).
+async function fetchCanopy(cols, rows, bounds) {
+  const { fromUrl } = await import('geotiff');
+  const R = 6378137;
+  const merc = (lat, lon) => [(R * lon * Math.PI) / 180, R * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360))];
+  // Tiles are named by zoom-9 quadkey.
+  const z = 9, n = 2 ** z;
+  const tx = Math.floor(((origin.lon + 180) / 360) * n);
+  const ty = Math.floor(((1 - Math.log(Math.tan((origin.lat * Math.PI) / 180) + 1 / Math.cos((origin.lat * Math.PI) / 180)) / Math.PI) / 2) * n);
+  let key = '';
+  for (let i = z; i > 0; i--) key += String(((tx >> (i - 1)) & 1) + (((ty >> (i - 1)) & 1) << 1));
+  const tif = await fromUrl(`https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float/chm/${key}.tif`);
+  const img = await tif.getImage();
+  const [x0, , , y1] = img.getBoundingBox();
+  const res = img.getResolution()[0];
+  const ll = (x, y) => [origin.lat + y / ky, origin.lon + x / kx];
+  const [ax, ay] = merc(...ll(bounds.minX, bounds.minY));
+  const [bx, by] = merc(...ll(bounds.maxX, bounds.maxY));
+  const win = [Math.floor((ax - x0) / res) - 2, Math.floor((y1 - by) / res) - 2, Math.ceil((bx - x0) / res) + 2, Math.ceil((y1 - ay) / res) + 2];
+  const [data] = await img.readRasters({ window: win });
+  const w = win[2] - win[0];
+  const out = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const [mx, my] = merc(...ll(bounds.minX + c * CELL, bounds.minY + r * CELL));
+    const px = Math.round((mx - x0) / res) - win[0], py = Math.round((y1 - my) / res) - win[1];
+    out[r * cols + c] = data[py * w + px] ?? 0;
+  }
+  return out;
+}
+
 // ---------- main ----------
 async function main() {
   console.log('Downloading OpenStreetMap tiles…');
@@ -311,8 +342,16 @@ async function main() {
   }
   console.log(`Elevation ${minH.toFixed(1)}–${maxH.toFixed(1)} m`);
 
+  // Tree canopy height (Meta & WRI 1 m global canopy height map, derived from satellite imagery)
+  console.log('Downloading tree canopy heights…');
+  const canopy = await fetchCanopy(cols, rows, bounds);
+  let treeCells = 0;
+  for (const v of canopy) if (v >= 4) treeCells++;
+  console.log(`Trees (4 m+) cover ${((100 * treeCells) / canopy.length).toFixed(0)}% of the area`);
+
   await mkdir(OUT, { recursive: true });
   await writeFile(new URL('terrain.bin', OUT), Buffer.from(grid.buffer));
+  await writeFile(new URL('canopy.bin', OUT), Buffer.from(canopy.buffer));
   const course = {
     name: 'Cedar Crest',
     fetched: new Date().toISOString().slice(0, 10),
@@ -320,6 +359,7 @@ async function main() {
     origin, metersPerDeg: { x: kx, y: ky },
     bounds,
     terrain: { file: 'terrain.bin', cols, rows, cell: CELL, minX: bounds.minX, minY: bounds.minY, minH, maxH, scale: 0.01 },
+    canopy: { file: 'canopy.bin', source: 'Meta & World Resources Institute, High Resolution Canopy Height Maps (CC BY 4.0)' },
     boundary: boundaryRings,
     holes, features, paths, trees,
   };

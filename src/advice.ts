@@ -1,6 +1,6 @@
 // Shot advice: simulate many shots for each club and aim point using your
 // distance and left/right spread, then pick the one with the lowest expected score.
-import { Course, Hole, XY, Lie, YD, dist, bearing, fromBearing, pointInFeature, toYds } from './course';
+import { Course, Hole, XY, Lie, YD, TREE_M, dist, bearing, fromBearing, pointInFeature, toYds } from './course';
 import { Conditions, carryFactor } from './conditions';
 import { expected } from './sg';
 import type { Club, PlanStep } from './store';
@@ -24,8 +24,9 @@ export interface Option {
   expected: number; // expected strokes to hole out, including this shot
   pGreen: number;
   pFairway: number;
-  pTrouble: number; // water, out of bounds, trees
+  pTrouble: number; // water, out of bounds, under trees
   pSand: number;
+  pOther: number; // ends up on another hole
   leaveYds: number; // distance from aim point to pin
   swing: number; // 1 = full swing, less for a partial wedge
 }
@@ -62,7 +63,46 @@ export function outcome(ctx: Ctx, p: XY): { e: number; lie: Lie } {
     const useLie: Lie = dropLie === 'water' || dropLie === 'ob' || dropLie === 'green' ? 'rough' : dropLie;
     return { e: 1 + expected(toYds(dist(drop, pin)), useLie, handicap), lie };
   }
-  return { e: expected(toYds(dist(p, pin)), lie, handicap), lie };
+  return { e: expected(toYds(dist(p, pin)), lie, handicap) + offHolePenalty(ctx, p), lie };
+}
+
+/**
+ * Extra strokes for finishing away from the hole you're playing: on another hole's
+ * fairway or green (blocked angles, waiting on other groups, safety), or far off
+ * this hole's line of play.
+ */
+export function offHolePenalty(ctx: Ctx, p: XY): number {
+  const { course, hole } = ctx;
+  let pen = course.onOtherHole(p, hole) ? 0.3 : 0;
+  const off = course.offLine(p, hole);
+  if (off > 35) pen += Math.min(0.6, (off - 35) * 0.015);
+  return pen;
+}
+
+/** Peak height (m) of a shot of this length; low punches from under trees. */
+function apexFor(d: number, lie: Lie) {
+  return lie === 'recovery' ? 5 : Math.max(8, Math.min(30, d * 0.13));
+}
+
+/**
+ * Follow the ball's flight and return where it stops if a tree gets in the way
+ * (it drops a few meters short, under the tree), or null if the path is clear.
+ */
+export function treeStop(ctx: Ctx, to: XY, apex: number): XY | null {
+  const { course, from } = ctx;
+  const d = dist(from, to);
+  const h0 = course.height(from[0], from[1]), h1 = course.height(to[0], to[1]);
+  const steps = Math.max(4, Math.ceil(d / 5));
+  for (let i = 1; i < steps; i++) {
+    const s = i / steps;
+    if (s * d < 8) continue; // the first few meters: the ball starts under/around the player
+    const q: XY = [from[0] + (to[0] - from[0]) * s, from[1] + (to[1] - from[1]) * s];
+    const tree = course.treeAt(q[0], q[1]);
+    if (tree < TREE_M) continue;
+    const ball = h0 + (h1 - h0) * s + 4 * apex * s * (1 - s);
+    if (ball < course.height(q[0], q[1]) + tree * 0.9) return [from[0] + (to[0] - from[0]) * Math.max(0, s - 2 / steps), from[1] + (to[1] - from[1]) * Math.max(0, s - 2 / steps)];
+  }
+  return null;
 }
 
 /** Average carry-and-roll in meters for a shot on this bearing, after wind, temperature, lie and slope. */
@@ -90,22 +130,26 @@ export function evaluate(ctx: Ctx, club: Club, brg: number, swing = 1, n = 160):
   const driftDeg = (Math.atan(cross * 0.01) * 180) / Math.PI;
   const r = rng(Math.round(brg * 1000 + club.yds * 31 + swing * 97 + from[0] * 7 + from[1] * 13));
   const green = course.greenOf(hole);
-  let sum = 0, g = 0, fw = 0, tr = 0, sd = 0;
+  const apex = apexFor(meanM, ctx.lie);
+  let sum = 0, g = 0, fw = 0, tr = 0, sd = 0, other = 0;
   for (let i = 0; i < n; i++) {
     const d = meanM + gauss(r) * sdM;
     const a = brg + driftDeg + gauss(r) * sdDeg;
-    const p = fromBearing(from, a, Math.max(1, d));
+    let p = fromBearing(from, a, Math.max(1, d));
+    const stop = treeStop(ctx, p, apex);
+    if (stop) p = stop;
     const o = outcome(ctx, p);
     sum += o.e;
+    if (course.onOtherHole(p, hole)) other++;
     if (o.lie === 'green' && green && pointInFeature(p, green)) g++;
-    else if (o.lie === 'fairway') fw++;
+    else if (o.lie === 'fairway' && !course.onOtherHole(p, hole)) fw++;
     else if (o.lie === 'water' || o.lie === 'ob' || o.lie === 'recovery') tr++;
     else if (o.lie === 'sand') sd++;
   }
   const aim = fromBearing(from, brg + driftDeg, meanM);
   return {
     club: club.name, aim, brg, carryYds: toYds(meanM), expected: 1 + sum / n,
-    pGreen: g / n, pFairway: fw / n, pTrouble: tr / n, pSand: sd / n,
+    pGreen: g / n, pFairway: fw / n, pTrouble: tr / n, pSand: sd / n, pOther: other / n,
     leaveYds: toYds(dist(aim, ctx.pin)), swing,
   };
 }
@@ -141,14 +185,16 @@ export function suggest(ctx: Ctx, limit = 5): Option[] {
       }
     }
   }
-  options.sort((a, b) => a.expected - b.expected);
+  // Never pick a target that is itself under a tree or on another hole.
+  const rank = (o: Option) => o.expected + (ctx.course.lieAt(o.aim, hole) === 'recovery' || ctx.course.onOtherHole(o.aim, hole) ? 0.25 : 0);
+  options.sort((a, b) => rank(a) - rank(b));
   // Keep the best aim per club so the list shows real alternatives.
   const best = new Map<string, Option>();
   for (const o of options) if (!best.has(o.club)) best.set(o.club, o);
   // Re-check the finalists with more simulated shots.
   return [...best.values()].slice(0, limit + 2)
     .map((o) => evaluate(ctx, ctx.bag.find((c) => c.name === o.club)!, o.brg, o.swing, 400))
-    .sort((a, b) => a.expected - b.expected)
+    .sort((a, b) => rank(a) - rank(b))
     .slice(0, limit);
 }
 

@@ -235,7 +235,7 @@ function renderOptions(): string {
   return `<ul class="list">${opts.map((o, i) => `
     <li class="opt ${i === app.selOpt ? 'sel' : ''}" data-act="selopt" data-i="${i}" style="border-radius:10px;padding:8px">
       <div class="grow"><b>${o.club}</b> <span class="small muted">${Math.round(o.carryYds)} yds${o.swing < 0.99 ? ' (soft)' : ''} · leaves ${Math.round(o.leaveYds)}</span>
-      <div class="tiny muted">${o.pGreen > 0.02 ? `green ${pct(o.pGreen)} · ` : ''}${o.pFairway > 0.02 ? `fairway ${pct(o.pFairway)} · ` : ''}sand ${pct(o.pSand)} · trouble ${pct(o.pTrouble)}</div></div>
+      <div class="tiny muted">${o.pGreen > 0.02 ? `green ${pct(o.pGreen)} · ` : ''}${o.pFairway > 0.02 ? `fairway ${pct(o.pFairway)} · ` : ''}sand ${pct(o.pSand)} · trees/water/OB ${pct(o.pTrouble)}${o.pOther > 0.02 ? ` · other hole ${pct(o.pOther)}` : ''}</div></div>
       <div style="text-align:right"><b class="num">${o.expected.toFixed(2)}</b><div class="tiny ${i ? 'loss' : 'gain'}">${i ? '+' + (o.expected - best).toFixed(2) : 'best'}</div></div>
     </li>`).join('')}</ul>
     <div class="row wrap"><button class="btn sm primary" data-act="useopt">Use ${opts[app.selOpt].club}</button><button class="btn sm" data-act="closeopts">Hide</button></div>
@@ -419,7 +419,7 @@ function menu() {
     <p class="small muted">Saved on this phone only. Export a backup now and then.</p>
     <div class="row wrap"><button class="btn" data-act="export">Export backup</button><button class="btn" data-act="import">Import backup</button><button class="btn danger" data-act="wipe">Erase everything</button></div>
     <h3>About</h3>
-    <p class="tiny muted">Course map © OpenStreetMap contributors (ODbL), fetched ${app.course.data.fetched}. Elevation: USGS 3DEP. Weather: Open-Meteo. Strokes-gained baseline adapted from Mark Broadie's tour data and scaled for your handicap (approximate).</p>
+    <p class="tiny muted">Course map © OpenStreetMap contributors (ODbL), fetched ${app.course.data.fetched}. Elevation: USGS 3DEP. Trees: Meta &amp; WRI canopy height map (CC BY 4.0). Weather: Open-Meteo. Strokes-gained baseline adapted from Mark Broadie's tour data and scaled for your handicap (approximate).</p>
     <button class="btn primary wide" data-act="closemodal">Done</button>`);
   $('#modal').onclick = null;
 }

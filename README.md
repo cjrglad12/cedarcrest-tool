@@ -7,14 +7,16 @@ gain and lose strokes over time.
 ## What it does
 
 **Plan**
-- All 18 holes in 3D: real USGS 1 m elevation with fairways, greens, bunkers, water,
-  trees and cart paths from OpenStreetMap. Tee, Top and Green camera views; drag to orbit.
+- All 18 holes in 3D: real USGS elevation, fairways, greens, bunkers, water and cart
+  paths from OpenStreetMap, and every tree from a 1 m canopy height map. Tee, Top and Green camera views; drag to orbit.
 - Yardages to the front, pin and back of the green, plus "plays like" yardage that adjusts
   for elevation, wind and temperature.
 - Bunkers and water near your line, with reach and carry yardages.
 - A saved plan per hole: club and target for each shot. Tap **Suggest best plan** and the
   app simulates hundreds of shots per club and aim point using your distances and misses,
-  then picks the play with the lowest expected score. **Compare clubs** shows the
+  then picks the play with the lowest expected score. Trees can stop a shot in flight or
+  leave you a punch-out, and finishing on another hole or far off this hole's line costs
+  extra. **Compare clubs** shows the
   alternatives and where ~80% of shots land.
 - Live wind and temperature for the course (Open-Meteo), or enter them by hand.
 - Move the pin to today's position; keep notes per hole.
@@ -66,8 +68,9 @@ npm run build      # production build in dist/
 NODE_USE_ENV_PROXY=1 npm run fetch-course   # NODE_USE_ENV_PROXY only needed behind a proxy
 ```
 
-This downloads the course layout from the OpenStreetMap API and a 2 m elevation grid from
-USGS 3DEP, writing `public/data/course.json` and `public/data/terrain.bin`. If the course
+This downloads the course layout from the OpenStreetMap API, a 2 m elevation grid from
+USGS 3DEP and tree heights from the Meta/WRI canopy height map, writing
+`public/data/course.json`, `terrain.bin` and `canopy.bin`. If the course
 layout changes (or OpenStreetMap gets better), edit it on openstreetmap.org and re-run.
 
 ## How the numbers work
@@ -83,4 +86,5 @@ layout changes (or OpenStreetMap gets better), edit it on openstreetmap.org and 
 ## Credits
 
 Course map © OpenStreetMap contributors (ODbL). Elevation: USGS 3D Elevation Program.
+Trees: Meta & World Resources Institute High Resolution Canopy Height Maps (CC BY 4.0).
 Weather: Open-Meteo. 3D: three.js.
