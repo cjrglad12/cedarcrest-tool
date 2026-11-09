@@ -365,3 +365,22 @@ describe('live weather outlook', () => {
     expect(notes).toContain('Warming to 80°F by 5 PM');
   });
 });
+
+describe('putting extras', () => {
+  it('learns a slower green from putts that come up short', async () => {
+    const { learnStimp } = await import('../src/putt');
+    let st = 10;
+    for (let i = 0; i < 4; i++) st = learnStimp(st, 20, -3); // 3 ft short on 20-footers
+    expect(st).toBeLessThan(9.2);
+    expect(learnStimp(10, 20, 0)).toBe(10);
+  });
+  it('grain nudges the ball the way it grows and speeds it down-grain', async () => {
+    const { roll, speedFor } = await import('../src/putt');
+    const flat = { height: () => 0, hole: [100, 100] as [number, number], stimp: 10 };
+    const plain = roll(flat, [0, 0], 0, speedFor(10, 5));
+    const west = roll({ ...flat, grainToward: 270 }, [0, 0], 0, speedFor(10, 5));
+    expect(west.stop[0]).toBeLessThan(plain.stop[0] - 0.05);
+    const downGrain = roll({ ...flat, grainToward: 0 }, [0, 0], 0, speedFor(10, 5));
+    expect(downGrain.stop[1]).toBeGreaterThan(plain.stop[1]);
+  });
+});

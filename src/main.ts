@@ -1,6 +1,6 @@
 import './styles.css';
 import { bestFix, fmtHcp, parseHcp } from './gps';
-import { findLine, roll, speedFor, rise, describeAim, M_TO_FT, PuttGreen, PuttResult, PuttRead } from './putt';
+import { findLine, roll, speedFor, rise, describeAim, learnStimp, M_TO_FT, PuttGreen, PuttResult, PuttRead } from './putt';
 import { tipsFor, isWet, Tip } from './tips';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
@@ -647,9 +647,15 @@ function refresh(opts: { camera?: boolean } = {}) {
 }
 
 // ---------------- Putting ----------------
+const todayKey = () => new Date().toLocaleDateString('en-CA');
+/** Green speed for reads: what today's putts taught us, else your setting (a bit slower when wet). */
+function stimpNow() {
+  const t = S().settings.stimpToday;
+  if (t && t.date === todayKey()) return t.value;
+  return Math.max(6, S().settings.stimp - (wetNow() ? 1.5 : 0));
+}
 function puttGreen(): PuttGreen {
-  const stimp = Math.max(6, S().settings.stimp - (wetNow() ? 1.5 : 0));
-  return { height: (x, y) => app.course.height(x, y), hole: pin(), stimp };
+  return { height: (x, y) => app.course.height(x, y), hole: pin(), stimp: stimpNow(), grainToward: S().settings.grainToward };
 }
 
 /** Where to start the ball: your mark on the green, your position if you're on it, else a sample 20 ft putt. */
@@ -671,8 +677,9 @@ function startPutt(ball = defaultBall()) {
   const result = best?.result ?? roll(g, ball, bearing(ball, aim), speedFor(g.stimp, dist(ball, aim)));
   app.putt = { ball, aim, result, best, placing: false };
   app.options = null; app.measure = null; app.mode = null;
+  const wasPutting = app.scene.puttActive;
   app.scene.setPutt({ ball, aim, path: result.path, holed: result.holed });
-  app.scene.puttView('pov');
+  if (!wasPutting) app.scene.puttView('pov');
   document.querySelector('.hint')?.remove();
   renderTop(); renderPanel();
 }
@@ -715,15 +722,20 @@ function renderPutt(): string {
     <div class="big3">
       <div><b>${ft < 10 ? ft.toFixed(1) : Math.round(ft)}</b><span>feet</span></div>
       <div><b>${Math.abs(riseIn) < 1 ? '0' : Math.round(Math.abs(riseIn))}″</b><span>${Math.abs(riseIn) < 1 ? 'level' : riseIn > 0 ? 'uphill' : 'downhill'}</span></div>
-      <div><b>${g.stimp}</b><span>green speed${wetNow() ? ' (wet)' : ''}</span></div>
+      <div><b>${g.stimp}</b><span>green speed${S().settings.stimpToday?.date === todayKey() ? ' (learned)' : wetNow() ? ' (wet)' : ''}</span></div>
     </div>
     ${best ? `<div class="card"><div class="small muted">Best line</div><b>${describeAim(best.breakM)}</b><div class="small">Hit it like a ${Math.round(best.flatDistance * M_TO_FT)}-ft putt on a flat green${best.flatDistance > dist(pt.ball, g.hole) * 1.15 ? ' (firm)' : best.flatDistance < dist(pt.ball, g.hole) * 0.95 ? ' (soft, it runs)' : ''}.</div></div>` : ''}
     <div class="elev">Your aim: ${resultText}</div>
-    <p class="small muted" style="margin:4px 0">Drag on the green to move the yellow aim marker. Aim farther away to hit it firmer. The line shows how it rolls.</p>
+    <p class="small muted" style="margin:4px 0">Drag on the green to move the yellow aim marker (farther away = firmer). Grab the ball to move it. The line shows how it rolls.</p>
     <div class="row wrap"><button class="btn primary" data-act="puttbest">Find the line</button><button class="btn" data-act="puttroll">▶ Roll it</button><button class="btn" data-act="puttball">${pt.placing ? 'Tap the green…' : 'Move ball'}</button></div>
+    <div class="small muted" style="margin:12px 0 6px">Hit this putt? How did it finish?</div>
+    <div class="seg">${([[-4, '3+ ft short'], [-2, 'A bit short'], [0, 'Good pace'], [2, 'A bit long'], [4, '3+ ft long']] as const).map(([v, l]) => `<button data-act="puttlearn" data-v="${v}">${l}</button>`).join('')}</div>
+    <p class="tiny muted" style="margin-top:4px">The app learns today's green speed from this and updates the read.${S().settings.stimpToday?.date === todayKey() ? ` Learned today: ${S().settings.stimpToday!.value}. <button class="linkish" data-act="puttforget">Reset</button>` : ''}</p>
     <div class="small muted" style="margin:10px 0 6px">Slope view (how much the green's shape is stretched)</div>
     <div class="seg">${[[1, 'True'], [3, '3×'], [5, '5×']].map(([v, l]) => `<button class="${app.scene.puttEx === v ? 'on' : ''}" data-act="puttex" data-v="${v}">${l}</button>`).join('')}</div>
     <p class="tiny muted" style="margin-top:4px">White lines are 1 inch of height apart: close together means steep, far apart means flat.</p>
+    <div class="small muted" style="margin:10px 0 6px">Grain (bermuda): which way does it grow?</div>
+    <div class="row wrap">${[['off', 'Ignore'], ['270', 'Toward sunset (W)'], ['other', 'Other…']].map(([v, l]) => `<button class="btn sm ${(v === 'off' && S().settings.grainToward === null) || (v === '270' && S().settings.grainToward === 270) || (v === 'other' && S().settings.grainToward !== null && S().settings.grainToward !== 270) ? 'primary' : ''}" data-act="grain" data-v="${v}">${l}${v === 'other' && S().settings.grainToward !== null && S().settings.grainToward !== 270 ? ` (${compass(S().settings.grainToward!)})` : ''}</button>`).join('')}</div>
     <div class="small muted" style="margin:10px 0 6px">Green speed (Stimpmeter, feet)</div>
     <div class="seg">${speeds.map(([v, l]) => `<button class="${S().settings.stimp === v ? 'on' : ''}" data-act="stimp" data-v="${v}">${v}${l ? `<small>${l}</small>` : ''}</button>`).join('')}</div>
     <h3>Tips</h3>
@@ -1071,7 +1083,27 @@ function onClick(e: Event) {
     case 'puttabove': app.scene.puttView('above'); renderTop(); break;
     case 'puttbest': if (app.putt) { const g = puttGreen(); const b = findLine(g, app.putt.ball); app.putt.best = b; if (b) { aimPutt(b.aim); app.putt.result = b.result; } renderPanel(); } break;
     case 'puttball': if (app.putt) { app.putt.placing = !app.putt.placing; app.scene.puttPlacing = app.putt.placing; renderPanel(); } break;
-    case 'stimp': S().settings.stimp = +el.dataset.v!; save(); if (app.putt) { const b = findLine(puttGreen(), app.putt.ball); app.putt.best = b; aimPutt(app.putt.aim); } renderPanel(); break;
+    case 'puttlearn': if (app.putt) {
+      const pt = app.putt, g = puttGreen();
+      const predicted = dist(pt.ball, pt.result.stop) * M_TO_FT;
+      const next = learnStimp(g.stimp, predicted, +el.dataset.v!);
+      S().settings.stimpToday = { date: todayKey(), value: next };
+      save();
+      toast(next === g.stimp ? 'Pace matched the read: speed unchanged' : `Green speed for today: ${next} (was ${g.stimp})`);
+      app.putt.best = findLine(puttGreen(), pt.ball); aimPutt(pt.aim); renderPanel();
+    } break;
+    case 'puttforget': S().settings.stimpToday = null; save(); if (app.putt) { app.putt.best = findLine(puttGreen(), app.putt.ball); aimPutt(app.putt.aim); } renderPanel(); break;
+    case 'grain': {
+      const v = el.dataset.v!;
+      if (v === 'off') S().settings.grainToward = null;
+      else if (v === '270') S().settings.grainToward = 270;
+      else { const dirs = [0, 45, 90, 135, 180, 225, 315]; const cur = S().settings.grainToward; S().settings.grainToward = dirs[(cur === null || cur === 270 ? -1 : dirs.indexOf(cur)) + 1] ?? 0; }
+      save();
+      if (app.putt) { app.putt.best = findLine(puttGreen(), app.putt.ball); aimPutt(app.putt.aim); }
+      renderPanel();
+      break;
+    }
+    case 'stimp': S().settings.stimp = +el.dataset.v!; S().settings.stimpToday = null; save(); if (app.putt) { const b = findLine(puttGreen(), app.putt.ball); app.putt.best = b; aimPutt(app.putt.aim); } renderPanel(); break;
     case 'readputt': app.scene.view('green'); startPutt(); break;
     case 'wet': { const order = ['auto', 'wet', 'dry'] as const; S().settings.wet = order[(order.indexOf(S().settings.wet) + 1) % 3]; save(); app.options = null; renderPanel(); break; }
     case 'resetview': app.scene.view(app.scene.currentView); renderTop(); break;
@@ -1228,6 +1260,17 @@ async function boot() {
   app.scene.onTap = onTap;
   app.scene.onCompass = setNeedle;
   app.scene.onUserMove = () => renderTop();
+  app.scene.onBallMove = (p, done) => {
+    if (!app.putt || !p) { if (done && app.putt) renderPanel(); return; }
+    const pt = app.putt, g = puttGreen();
+    // Keep the same aim direction and pace relative to the ball while it moves.
+    const dx = pt.aim[0] - pt.ball[0], dy = pt.aim[1] - pt.ball[1];
+    pt.ball = p;
+    if (done) { startPutt(p); return; }
+    pt.aim = [p[0] + dx, p[1] + dy];
+    pt.result = roll(g, p, bearing(p, pt.aim), speedFor(g.stimp, dist(p, pt.aim)));
+    app.scene.setPutt({ ball: p, aim: pt.aim, path: pt.result.path, holed: pt.result.holed });
+  };
   app.scene.onAim = (p, done) => {
     if (!app.putt) return;
     if (p) aimPutt(p);

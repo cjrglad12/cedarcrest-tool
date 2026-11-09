@@ -816,6 +816,8 @@ export class HoleScene {
   puttPlacing = false;
   /** Called while dragging the aim point (`done` on release). */
   onAim: (p: XY | null, done: boolean) => void = () => {};
+  /** Called while dragging the ball itself (`done` on release). */
+  onBallMove: (p: XY | null, done: boolean) => void = () => {};
   private putt = new THREE.Group();
   private puttSurface: THREE.Mesh | null = null;
   private puttDyn = new THREE.Group(); // ball, aim, path
@@ -1059,6 +1061,13 @@ export class HoleScene {
     this.render();
   }
 
+  /** Screen position of a point on the putting model. */
+  private projectPutt(p: XY) {
+    const v = this.group.localToWorld(this.pv(p, 0.05)).project(this.camera);
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    return { x: rect.left + ((v.x + 1) / 2) * rect.width, y: rect.top + ((1 - v.y) / 2) * rect.height };
+  }
+
   private pickPutt(clientX: number, clientY: number): XY | null {
     if (!this.puttSurface) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
@@ -1084,28 +1093,35 @@ export class HoleScene {
     const c = this.renderer.domElement;
     let down: { x: number; y: number; t: number } | null = null;
     const pointers = new Set<number>();
-    let aiming = false;
+    let aiming = false, movingBall = false;
     c.addEventListener('pointerdown', (e) => {
       pointers.add(e.pointerId);
       down = { x: e.clientX, y: e.clientY, t: performance.now() };
-      // Putting: one finger (or the left mouse button) drags the aim point.
+      // Putting: one finger (or the left mouse button) drags the ball if you grab it, otherwise the aim point.
       if (this.puttActive && !this.puttPlacing && pointers.size === 1 && (e.pointerType !== 'mouse' || e.button === 0)) {
         const p = this.pickPutt(e.clientX, e.clientY);
-        if (p) { aiming = true; c.setPointerCapture(e.pointerId); this.onAim(p, false); }
-      } else if (pointers.size > 1) aiming = false;
+        if (!p) return;
+        c.setPointerCapture(e.pointerId);
+        const ballScreen = this.lastPutt ? this.projectPutt(this.lastPutt.ball) : null;
+        if (ballScreen && Math.hypot(ballScreen.x - e.clientX, ballScreen.y - e.clientY) < 34) { movingBall = true; this.onBallMove(p, false); }
+        else { aiming = true; this.onAim(p, false); }
+      } else if (pointers.size > 1) { aiming = false; movingBall = false; }
     });
     c.addEventListener('pointermove', (e) => {
-      if (!aiming || pointers.size > 1) return;
+      if ((!aiming && !movingBall) || pointers.size > 1) return;
       const p = this.pickPutt(e.clientX, e.clientY);
-      if (p) this.onAim(p, false);
+      if (!p) return;
+      if (movingBall) this.onBallMove(p, false); else this.onAim(p, false);
     });
     const end = (e: PointerEvent) => {
       pointers.delete(e.pointerId);
-      if (aiming) { aiming = false; const p = this.pickPutt(e.clientX, e.clientY); this.onAim(p, true); }
+      const p = this.pickPutt(e.clientX, e.clientY);
+      if (aiming) { aiming = false; this.onAim(p, true); }
+      if (movingBall) { movingBall = false; this.onBallMove(p, true); }
     };
     c.addEventListener('pointercancel', end);
     c.addEventListener('pointerup', (e) => {
-      const wasAiming = aiming;
+      const wasAiming = aiming || movingBall;
       end(e);
       if (wasAiming) { down = null; return; }
       if (!down) return;

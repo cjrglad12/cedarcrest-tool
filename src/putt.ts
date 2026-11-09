@@ -8,7 +8,13 @@ export interface PuttGreen {
   height(x: number, y: number): number; // meters
   hole: XY;
   stimp: number; // green speed in feet
+  /** Bermuda grain: the compass direction it grows toward. Down-grain rolls faster and nudges the ball that way. */
+  grainToward?: number | null;
 }
+
+/** How strongly grain acts: about like a 0.4% slope plus ±10% speed with/against it. */
+const GRAIN_PULL = (5 / 7) * 9.81 * 0.004;
+const GRAIN_SPEED = 0.1;
 
 export interface PuttResult {
   path: XY[];
@@ -60,8 +66,15 @@ export function roll(g: PuttGreen, ball: XY, brg: number, v0: number): PuttResul
       break;
     }
     const [sx, sy] = slopeAt(g, [x, y]);
-    const ax = (-5 / 7) * G * sx - (a * vx) / v;
-    const ay = (-5 / 7) * G * sy - (a * vy) / v;
+    let ax = (-5 / 7) * G * sx, ay = (-5 / 7) * G * sy;
+    let fr = a;
+    if (g.grainToward !== undefined && g.grainToward !== null) {
+      const gr = (g.grainToward * Math.PI) / 180, gx = Math.sin(gr), gy = Math.cos(gr);
+      const along = (vx * gx + vy * gy) / v; // +1 rolling down-grain
+      fr = a * (1 - GRAIN_SPEED * along);
+      ax += GRAIN_PULL * gx; ay += GRAIN_PULL * gy;
+    }
+    ax -= (fr * vx) / v; ay -= (fr * vy) / v;
     const nx = x + vx * DT, ny = y + vy * DT;
     // Closest approach to the hole along this little step.
     const dx = nx - x, dy = ny - y, L = dx * dx + dy * dy;
@@ -140,4 +153,16 @@ export function describeAim(breakM: number) {
   const cups = inches / CUP_IN;
   const cupText = cups < 1.25 ? 'just outside the edge' : `${Math.round(cups * 2) / 2} cups`;
   return `Aim ${cupText} ${breakM > 0 ? 'right' : 'left'} (${Math.round(inches)} in)`;
+}
+
+/**
+ * Learn today's green speed from how a putt finished. Roll distance is proportional to
+ * green speed for a given strike, so a putt that finished `missFt` feet past (+) or
+ * short (−) of where the read said it would means the green is that much faster/slower.
+ * Blends with what we already believed (each putt counts for about a third).
+ */
+export function learnStimp(current: number, predictedRollFt: number, missFt: number) {
+  if (predictedRollFt < 3) return current;
+  const observed = current * Math.max(0.5, Math.min(1.6, (predictedRollFt + missFt) / predictedRollFt));
+  return Math.round((current * 0.65 + observed * 0.35) * 10) / 10;
 }
