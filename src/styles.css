@@ -120,3 +120,30 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; }
   #viewbtns { right: 412px; }
   #toast { bottom: 24px; }
 }
+
+/* Segmented choices (tees, scoring mode, fairway) */
+.seg { display: flex; gap: 6px; }
+.seg button { flex: 1; border: 2px solid transparent; background: var(--chip); border-radius: 12px; padding: 10px 6px; font-weight: 700; line-height: 1.2; }
+.seg button small { display: block; font-weight: 500; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.seg button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--chip)); }
+/* On-course distances: large and easy to read in sunlight */
+.big3.play b { font-size: 30px; }
+.big3.play .mid { background: var(--accent); color: var(--accent-ink); }
+.big3.play .mid span { color: inherit; opacity: 0.9; }
+.btn.big { padding: 14px 10px; font-size: 15.5px; }
+.scorebox { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; text-align: center; }
+.scorebox > div { background: var(--chip); border-radius: 14px; padding: 8px 4px; }
+.stepper.big button { width: 46px; height: 46px; font-size: 24px; background: var(--panel); }
+.stepper.big b { font-size: 30px; min-width: 34px; }
+/* Scorecard */
+.scroll-x { overflow-x: auto; }
+table.card-t { font-size: 13px; min-width: 360px; }
+table.card-t th, table.card-t td { text-align: center; padding: 6px 2px; }
+table.card-t td:first-child, table.card-t th:first-child { text-align: left; padding-right: 6px; }
+.sc { display: inline-grid; place-items: center; min-width: 24px; height: 24px; border: 1.5px solid transparent; font-weight: 700; }
+.sc.birdie { border-color: var(--gain); border-radius: 50%; color: var(--gain); }
+.sc.eagle { border-color: var(--gain); border-radius: 50%; box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--gain); color: var(--gain); }
+.sc.bogey { border-color: var(--muted); }
+.sc.double { border-color: var(--loss); color: var(--loss); box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--loss); }
+.hint { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 2; background: #102018e0; color: #fff; padding: 7px 12px; border-radius: 99px; font-size: 13px; white-space: nowrap; pointer-events: none; }
+.list li[data-act] { cursor: pointer; }

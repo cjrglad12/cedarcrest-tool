@@ -46,7 +46,7 @@ export class HoleScene {
   private windSpacing = 50;
   private wind: Wind | null = null;
   private holeRot = 0;
-  currentView: ViewName = 'tee';
+  currentView: ViewName = 'top';
   /** Called with the on-screen angle of north (degrees clockwise from up) whenever the view turns. */
   onCompass: (deg: number) => void = () => {};
 
@@ -139,7 +139,7 @@ export class HoleScene {
     this.group.rotation.y = this.currentView === 'course' ? 0 : this.holeRot;
     this.placeMarkers();
     this.buildWind();
-    if (!same || !keepCamera) this.view(this.currentView === 'course' && keepCamera ? 'course' : 'tee');
+    if (!same || !keepCamera) this.view(this.currentView === 'course' && keepCamera ? 'course' : 'top');
     else this.showLabelsFor(this.currentView);
     this.render();
   }
@@ -349,10 +349,33 @@ export class HoleScene {
     this.me.visible = false;
   }
 
+  private holeLine: THREE.Line | null = null;
+  private pinIcon: THREE.Sprite | null = null;
+  private teeIcon: THREE.Sprite | null = null;
+
   private placeMarkers() {
     this.pinObj.position.copy(this.v3(this.pin));
     this.teeObj.position.copy(this.v3(this.teeXY));
     this.teeObj.rotation.y = this.group.rotation.y;
+    // Screen-size flag and tee icons, so both are easy to spot even zoomed out.
+    for (const o of [this.pinIcon, this.teeIcon, this.holeLine]) if (o) this.group.remove(o);
+    this.pinIcon = iconSprite('flag');
+    this.pinIcon.position.copy(this.v3(this.pin, 1));
+    this.teeIcon = iconSprite('tee');
+    this.teeIcon.position.copy(this.v3(this.teeXY, 1));
+    if (this.hole) {
+      const pts = [this.teeXY, ...this.hole.line.slice(1, -1), this.pin];
+      const dense: THREE.Vector3[] = [];
+      for (let i = 1; i < pts.length; i++) {
+        const n = Math.max(1, Math.ceil(dist(pts[i - 1], pts[i]) / 6));
+        for (let k = 0; k <= n; k++) dense.push(this.v3([pts[i - 1][0] + ((pts[i][0] - pts[i - 1][0]) * k) / n, pts[i - 1][1] + ((pts[i][1] - pts[i - 1][1]) * k) / n], 0.8));
+      }
+      this.holeLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(dense), new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, opacity: 0.7 }));
+      this.holeLine.computeLineDistances();
+      this.group.add(this.holeLine);
+    }
+    this.group.add(this.pinIcon, this.teeIcon);
+    this.sizeLabels();
   }
 
   setPin(pin: XY) { this.pin = pin; this.placeMarkers(); this.render(); }
@@ -523,9 +546,10 @@ export class HoleScene {
       this.camera.position.copy(teeW).addScaledVector(dir, -32).add(new THREE.Vector3(0, 22, 0));
       this.controls.target.copy(look);
     } else if (name === 'top') {
-      const mid = teeW.clone().lerp(pinW, 0.5);
-      const h = (len * 0.62 + 30) / Math.tan(((this.camera.fov / 2) * Math.PI) / 180);
-      this.camera.position.copy(mid).add(new THREE.Vector3(0, h, 0)).addScaledVector(dir, -h * 0.12);
+      const mid = teeW.clone().lerp(pinW, 0.46);
+      // Fit the whole hole, tee at the bottom and green at the top, slightly tilted.
+      const h = (len * 0.68 + 45) / Math.tan(((this.camera.fov / 2) * Math.PI) / 180);
+      this.camera.position.copy(mid).add(new THREE.Vector3(0, h * 0.95, 0)).addScaledVector(dir, -h * 0.3);
       this.controls.target.copy(mid);
     } else {
       this.camera.position.copy(pinW).addScaledVector(dir, -55).add(new THREE.Vector3(0, 26, 0));
@@ -596,7 +620,7 @@ export class HoleScene {
       const p = o.userData.p as XY | undefined;
       if (!p) continue;
       if (all) { o.visible = true; continue; }
-      if (o.userData.hole === this.hole?.ref) { o.visible = false; continue; }
+      if (o.userData.hole !== undefined) { o.visible = false; continue; } // hole numbers only on the course map
       const m = o.userData.street ? 0 : 60;
       o.visible = !!r && p[0] > r.minX - m && p[0] < r.maxX + m && p[1] > r.minY - m && p[1] < r.maxY + m;
     }
@@ -732,6 +756,27 @@ export function dispersion(club: { yds: number; sdYds: number; sdDeg: number }) 
   // ~80% of shots land inside 1.3 standard deviations in each direction
   const k = 1.3;
   return { along: club.sdYds * YD * k, across: Math.tan((club.sdDeg * Math.PI) / 180) * club.yds * YD * k };
+}
+
+/** Round map pin for the flag or the tee, drawn at a fixed size on screen. */
+function iconSprite(kind: 'flag' | 'tee'): THREE.Sprite {
+  const cv = document.createElement('canvas');
+  cv.width = 64; cv.height = 64;
+  const g = cv.getContext('2d')!;
+  g.fillStyle = kind === 'flag' ? '#ffffff' : '#1f7a45';
+  g.beginPath(); g.arc(32, 32, 26, 0, Math.PI * 2); g.fill();
+  g.lineWidth = 4; g.strokeStyle = kind === 'flag' ? '#e53935' : '#ffffff'; g.stroke();
+  if (kind === 'flag') {
+    g.fillStyle = '#333'; g.fillRect(25, 15, 3.5, 34);
+    g.fillStyle = '#e53935'; g.beginPath(); g.moveTo(28.5, 15); g.lineTo(46, 22); g.lineTo(28.5, 29); g.fill();
+  } else {
+    g.fillStyle = '#fff'; g.font = '800 26px -apple-system, system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('T', 32, 34);
+  }
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
+  sp.userData = { w: 64, h: 64, hpx: 30 };
+  sp.renderOrder = 11;
+  return sp;
 }
 
 function centroidOf(ring: XY[]): XY {

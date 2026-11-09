@@ -97,10 +97,63 @@ function renderTop() {
   $('#tabs').innerHTML = (['plan', 'play', 'stats'] as Tab[]).map((k) => `<button data-tab="${k}" class="${app.tab === k ? 'on' : ''}">${{ plan: 'Plan', play: round() ? 'Play ●' : 'Play', stats: 'Stats' }[k]}</button>`).join('');
   const cur = app.scene?.currentView;
   $('#viewbtns').innerHTML = `<button class="compass" data-act="northup" aria-label="Compass: tap for the course map, north up"><i id="needle">▲</i><small>N</small></button>` +
-    (['tee', 'top', 'green', 'course'] as ViewName[]).map((v) => `<button data-view="${v}" class="${cur === v ? 'on' : ''}">${{ tee: 'Tee', top: 'Top', green: 'Green', course: 'Course' }[v]}</button>`).join('') +
+    (['top', 'tee', 'green', 'course'] as ViewName[]).map((v) => `<button data-view="${v}" class="${cur === v ? 'on' : ''}">${{ top: 'Hole', tee: '3D', green: 'Green', course: 'Course' }[v]}</button>`).join('') +
     `<button data-act="wind" class="${S().settings.showWind ? 'on' : ''}" aria-pressed="${S().settings.showWind}">Wind</button>` +
     (myPos() ? '<button data-act="viewme">Me</button>' : '');
   setNeedle(lastNeedle);
+}
+
+function renderHint() {
+  document.querySelector('.hint')?.remove();
+  if (app.tab !== 'plan' || app.mode || !S().settings.measureHint || app.measure) return;
+  const el = document.createElement('div');
+  el.className = 'hint';
+  el.textContent = 'Tap anywhere on the hole to measure';
+  $('#view').appendChild(el);
+}
+
+function welcome() {
+  let hcp = S().settings.handicap, drv = S().bag.find((c) => c.name === 'Driver')?.yds ?? 230, tees = S().settings.teeSet;
+  const draw = () => {
+    modal(`<h2>Welcome to Cedar Crest</h2>
+      <p class="small muted">Three quick questions so the yardages and advice fit your game. You can change them later in ☰.</p>
+      <div class="row spread" style="margin-top:12px"><span>Your handicap</span><div class="stepper"><button data-w="hcp" data-d="-1" aria-label="Lower handicap">−</button><b>${hcp}</b><button data-w="hcp" data-d="1" aria-label="Higher handicap">+</button></div></div>
+      <div class="row spread" style="margin-top:12px"><span>Driver distance</span><div class="stepper"><button data-w="drv" data-d="-5" aria-label="Shorter">−</button><b>${drv}</b><button data-w="drv" data-d="5" aria-label="Longer">+</button></div></div>
+      <div class="small muted" style="margin:12px 0 6px">Tees you usually play</div>
+      <div class="seg">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<button class="${t === tees ? 'on' : ''}" data-w="tees" data-v="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>
+      <button class="btn primary wide" style="margin-top:16px" data-w="go">Let's go</button>`);
+    $('#modal').onclick = (e) => {
+      const b = (e.target as HTMLElement).closest('[data-w]') as HTMLElement | null;
+      if (!b) return;
+      const w = b.dataset.w;
+      if (w === 'hcp') hcp = Math.max(0, Math.min(40, hcp + +b.dataset.d!));
+      if (w === 'drv') drv = Math.max(150, Math.min(330, drv + +b.dataset.d!));
+      if (w === 'tees') tees = b.dataset.v as TeeSet;
+      if (w === 'go') {
+        const base = S().bag.find((c) => c.name === 'Driver')?.yds ?? 230;
+        const k = drv / base;
+        S().bag = S().bag.map((c) => ({ ...c, yds: Math.round(c.yds * k) }));
+        Object.assign(S().settings, { handicap: hcp, teeSet: tees, onboarded: true });
+        saveNow(S()); refreshBag(); closeModal(); refresh({ camera: true });
+        return;
+      }
+      draw();
+    };
+  };
+  draw();
+}
+
+/** Walked onto another hole's tee between holes? Switch to that hole. */
+function maybeAdvance() {
+  const r = round(), me = app.gps?.xy;
+  if (!r || !me || app.mode || usingSim()) return;
+  const cur = r.holes[app.ref];
+  const midHole = cur && !cur.done && (cur.shots.length > 0 || (cur.quick && cur.strokes !== undefined && cur.strokes !== hole().par));
+  if (midHole) return;
+  for (const h of app.course.holes) {
+    if (h.ref === app.ref || r.holes[h.ref]?.done) continue;
+    if (h.tees.some((t) => dist(t.center, me) < 18)) { goHole(h.ref); toast(`You're on the ${h.ref} tee`); return; }
+  }
 }
 
 function renderModebar() {
@@ -258,69 +311,128 @@ function renderOptions(): string {
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 // ---------------- Play tab ----------------
+function newHoleRec(r: Round): HoleRec {
+  const quick = r.trackShots === false;
+  return { ref: app.ref, teeId: tee().id, pin: S().pins[app.ref] ?? hole().pin, shots: [], greenMark: null, putts: quick ? 2 : 0, holedFromOff: false, followedPlan: null, done: false, quick, strokes: quick ? hole().par : undefined, fairway: null };
+}
+
 function renderPlay(): string {
   const r = round();
   if (!r) {
     const past = S().rounds.filter((x) => x.finished).slice(-3).reverse();
+    const track = S().settings.trackShots;
     return `
       <h3>Start a round</h3>
-      <div class="row wrap">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<button class="btn ${S().settings.teeSet === t ? 'primary' : ''}" data-act="teeset" data-v="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>
-      <p class="small muted">Gets live wind and temperature for Cedar Crest, then you mark each shot with your phone's GPS.</p>
-      <button class="btn primary wide" data-act="startround">Start round at hole ${app.ref}</button>
-      ${past.length ? `<h3>Recent rounds</h3><ul class="list">${past.map((x) => { const v = analyzeRound(app.course, x, S().settings.handicap); return `<li><div class="grow">${new Date(x.date).toLocaleDateString()}</div><b>${v.score}</b><span class="muted small">${v.holes.length} holes</span></li>`; }).join('')}</ul>` : ''}`;
+      <div class="small muted" style="margin-bottom:6px">Tees</div>
+      <div class="seg">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<button class="${S().settings.teeSet === t ? 'on' : ''}" data-act="teeset" data-v="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>
+      <div class="small muted" style="margin:12px 0 6px">How do you want to keep score?</div>
+      <div class="seg">
+        <button class="${!track ? 'on' : ''}" data-act="trackshots" data-v="0">Score only<small>Quick: strokes, putts, fairway</small></button>
+        <button class="${track ? 'on' : ''}" data-act="trackshots" data-v="1">Track shots<small>GPS each shot: club distances &amp; strokes gained</small></button>
+      </div>
+      <button class="btn primary wide" style="margin-top:14px" data-act="startround">Start round on hole ${app.ref}</button>
+      <p class="tiny muted">You can switch between the two on any hole.</p>
+      ${past.length ? `<h3>Recent rounds</h3><ul class="list">${past.map((x) => { const v = analyzeRound(app.course, x, S().settings.handicap); return `<li data-act="scorecard" data-id="${x.id}"><div class="grow">${new Date(x.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</div><b>${v.score}</b><span class="muted small">${v.holes.length} holes ›</span></li>`; }).join('')}</ul>` : ''}`;
   }
   let rec = r.holes[app.ref];
-  if (!rec) {
-    rec = r.holes[app.ref] = { ref: app.ref, teeId: tee().id, pin: S().pins[app.ref] ?? hole().pin, shots: [], greenMark: null, putts: 0, holedFromOff: false, followedPlan: null, done: false };
-    save();
-  }
+  if (!rec) { rec = r.holes[app.ref] = newHoleRec(r); save(); }
   const me = myPos();
   const h = hole();
   let gpsLine = '';
-  if (usingSim()) gpsLine = `<div class="banner">${S().settings.simulateGps ? 'Practice mode: tap the map to place your ball.' : 'You\'re not at Cedar Crest, so GPS is off. Tap the map to place your ball.'}</div>`;
+  if (usingSim()) gpsLine = `<div class="banner">${S().settings.simulateGps ? 'Practice mode: tap the map to place your ball.' : 'You\'re away from Cedar Crest. Tap the map to place your ball.'}</div>`;
   else if (app.gpsError) gpsLine = `<div class="banner">GPS: ${esc(app.gpsError)} <button class="btn sm" data-act="simnow">Place by hand</button></div>`;
-  else if (!app.gps) gpsLine = '<div class="banner">Waiting for GPS…</div>';
-  else if (farFromCourse()) gpsLine = '<div class="banner">You\'re not at Cedar Crest. Tap the map to place your ball. <button class="btn sm" data-act="simnow">OK</button></div>';
-  else gpsLine = `<div class="small muted">GPS ±${Math.round(app.gps.acc * 1.09)} yds</div>`;
+  else if (!app.gps) gpsLine = '<div class="banner">Finding your location…</div>';
+  else if (farFromCourse()) gpsLine = '<div class="banner">You\'re away from Cedar Crest. Tap the map to place your ball. <button class="btn sm" data-act="simnow">OK</button></div>';
 
   const from = me ?? (rec.shots.length ? rec.shots[rec.shots.length - 1].start : tee().center);
   const gd = app.course.greenDistances(h, from, rec.pin);
   const pl = plays(from, rec.pin);
   const hv = analyzeHole(app.course, rec, S().settings.handicap);
-  const nextIdx = rec.shots.length;
-  const planned = plan().steps[nextIdx];
-  const shotRows = hv.shots.map((s, i) => `<li><span class="step" style="background:#fff;border:1px solid var(--line)">${i + 1}</span>
-    <div class="grow"><b>${s.club}</b> <span class="small muted">${Math.round(s.yds)} yds${s.endEstimated ? '?' : ''} · <span class="lie">${s.startLie}</span> → <span class="lie">${s.endLie}</span></span>${s.penalty ? ` <span class="chip loss">+${s.penalty} pen</span>` : ''}</div>
-    <button class="btn sm" data-act="pen" data-i="${i}">+Pen</button><button class="btn sm" data-act="delshot" data-i="${i}">✕</button></li>`).join('');
-
-  if (rec.done) {
-    return `${gpsLine}<div class="card"><b>Hole ${h.ref} done: ${hv.score}</b> (${hv.score - h.par === 0 ? 'par' : sgn(hv.score - h.par, 0)}) · ${hv.putts} putts
-      <div class="small">${(Object.keys(hv.sg) as Category[]).filter((k) => hv.sg[k] !== 0).map((k) => `${CATEGORY_LABEL[k]} <b class="${hv.sg[k] >= 0 ? 'gain' : 'loss'}">${sgn(hv.sg[k], 2)}</b>`).join(' · ')}</div></div>
-      <div class="row"><button class="btn" data-act="reopen">Edit hole</button><button class="btn primary grow" data-act="next">Next hole ›</button></div>
-      ${roundFooter()}`;
-  }
-  return `${gpsLine}
-    <div class="big3">
+  const toPar = (n: number) => (n === 0 ? 'E' : sgn(n, 0));
+  const distances = `
+    <div class="big3 play">
       <div><b>${y0(gd.front)}</b><span>Front</span></div>
-      <div><b>${y0(gd.pin)}</b><span>Pin · plays ${pl.plays}</span></div>
+      <div class="mid"><b>${y0(gd.pin)}</b><span>${pl.plays !== y0(gd.pin) ? `Plays ${pl.plays}` : 'Pin'}</span></div>
       <div><b>${y0(gd.back)}</b><span>Back</span></div>
     </div>
-    <div class="row wrap small" style="margin:6px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="chip">${pl.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(pl.riseFt)} ft</span>
+    ${gpsLine || (app.gps ? `<div class="tiny muted" style="text-align:center;margin-top:2px">GPS ±${Math.max(1, Math.round(app.gps.acc * 1.09))} yds</div>` : '')}`;
+
+  if (rec.done) {
+    return `<div class="card"><div class="row spread"><b>Hole ${h.ref}: ${hv.score}</b><span class="chip">${hv.score - h.par === 0 ? 'Par' : toPar(hv.score - h.par)}</span></div>
+      <div class="small muted">${hv.putts} putt${hv.putts === 1 ? '' : 's'}${hv.fairway !== null ? ` · fairway ${hv.fairway ? 'hit' : 'missed'}` : ''}${hv.gir ? ' · green in regulation' : ''}</div>
+      ${hv.shots.length ? `<div class="small">${(Object.keys(hv.sg) as Category[]).filter((k) => hv.sg[k] !== 0).map((k) => `${CATEGORY_LABEL[k]} <b class="${hv.sg[k] >= 0 ? 'gain' : 'loss'}">${sgn(hv.sg[k], 2)}</b>`).join(' · ')}</div>` : ''}</div>
+      <button class="btn primary wide" data-act="next">Next hole ›</button>
+      <div class="row" style="margin-top:8px"><button class="btn grow" data-act="reopen">Edit hole ${h.ref}</button><button class="btn grow" data-act="scorecard">Scorecard</button></div>
+      ${roundFooter()}`;
+  }
+
+  if (rec.quick) {
+    const strokes = rec.strokes ?? h.par;
+    return `${distances}
+      <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="chip">${pl.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(pl.riseFt)} ft</span><button class="btn sm" data-act="playopts">What should I hit?</button></div>
+      ${app.options ? renderOptions() : ''}
+      <div class="scorebox">
+        <div><div class="small muted">Score</div><div class="stepper big"><button data-act="qs" data-d="-1" aria-label="One less stroke">−</button><b>${strokes}</b><button data-act="qs" data-d="1" aria-label="One more stroke">+</button></div><div class="tiny muted">${strokes - h.par === 0 ? 'Par' : toPar(strokes - h.par)}</div></div>
+        <div><div class="small muted">Putts</div><div class="stepper big"><button data-act="putt" data-d="-1" aria-label="One less putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="One more putt">+</button></div></div>
+      </div>
+      ${h.par >= 4 ? `<div class="small muted" style="margin-top:10px">Tee shot</div><div class="seg">${(['left', 'hit', 'right'] as const).map((v) => `<button class="${rec!.fairway === v ? 'on' : ''}" data-act="fw" data-v="${v}">${{ left: '← Left', hit: 'Fairway', right: 'Right →' }[v]}</button>`).join('')}</div>` : ''}
+      <button class="btn primary wide" style="margin-top:12px" data-act="savehole">Save hole ${h.ref} ›</button>
+      <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="trackmode">Track shots on this hole</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="roundpin">Set today's pin</button></div>
+      ${roundFooter()}`;
+  }
+
+  const nextIdx = rec.shots.length;
+  const planned = plan().steps[nextIdx];
+  const shotRows = hv.shots.map((s, i) => `<li><span class="step" style="background:var(--chip)">${i + 1}</span>
+    <div class="grow"><b>${s.club}</b> <span class="small muted">${Math.round(s.yds)} yds${s.endEstimated ? '?' : ''} · <span class="lie">${s.startLie}</span> → <span class="lie">${s.endLie}</span></span>${s.penalty ? ` <span class="chip loss">+${s.penalty} pen</span>` : ''}</div>
+    <button class="btn sm" data-act="pen" data-i="${i}" aria-label="Add a penalty stroke">+Pen</button><button class="btn sm" data-act="delshot" data-i="${i}" aria-label="Delete shot">✕</button></li>`).join('');
+  return `${distances}
+    <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="chip">${pl.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(pl.riseFt)} ft</span>
       ${planned ? `<span class="chip">Plan: ${planned.club} → ${y0(dist(from, planned.target))}</span>` : ''}
       <button class="btn sm" data-act="playopts">What should I hit?</button></div>
     ${app.options ? renderOptions() : ''}
-    ${rec.shots.length ? `<ul class="list">${shotRows}</ul>` : ''}
-    ${rec.greenMark || hv.shots.length ? '' : ''}
+    ${rec.shots.length ? `<ul class="list">${shotRows}</ul>` : '<p class="small muted" style="margin:4px 0">Stand at your ball and tap <b>Mark shot</b> before each swing.</p>'}
     <div class="row" style="margin-top:6px">
-      <button class="btn primary grow" data-act="mark" ${me ? '' : 'disabled'}>📍 Mark ball &amp; hit</button>
-      <button class="btn grow" data-act="ongreen" ${rec.shots.length ? '' : 'disabled'}>⛳ ${rec.greenMark ? 'Re-mark' : 'On green'}</button>
+      <button class="btn primary grow big" data-act="mark" ${me ? '' : 'disabled'}>📍 Mark shot ${nextIdx + 1}</button>
+      <button class="btn grow big" data-act="ongreen" ${rec.shots.length ? '' : 'disabled'}>⛳ ${rec.greenMark ? 'Re-mark green' : "I'm on the green"}</button>
     </div>
     <div class="row spread" style="margin-top:10px">
-      <div><div class="small muted">Putts</div><div class="stepper"><button data-act="putt" data-d="-1">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1">+</button></div></div>
+      <div><div class="small muted">Putts</div><div class="stepper"><button data-act="putt" data-d="-1" aria-label="One less putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="One more putt">+</button></div></div>
       <button class="btn primary" data-act="finish" ${rec.shots.length ? '' : 'disabled'}>Finish hole</button>
     </div>
-    <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="roundpin">Set today's pin</button><button class="btn sm" data-act="simnow">Place ball by hand</button></div>
+    <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="quick">Just enter my score</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="roundpin">Set today's pin</button><button class="btn sm" data-act="simnow">Place ball by hand</button></div>
     ${roundFooter()}`;
+}
+
+/** Hole-by-hole card for a round, with front and back nine totals. */
+function scorecard(roundId?: string) {
+  const r = (roundId ? S().rounds.find((x) => x.id === roundId) : round()) ?? null;
+  if (!r) return;
+  const views = new Map(analyzeRound(app.course, r, S().settings.handicap).holes.map((v) => [v.ref, v]));
+  const cell = (ref: number) => {
+    const v = views.get(ref), par = app.course.hole(ref).par;
+    if (!v) return '<td class="muted">–</td>';
+    const d = v.score - par;
+    return `<td><span class="sc ${d <= -2 ? 'eagle' : d === -1 ? 'birdie' : d === 1 ? 'bogey' : d >= 2 ? 'double' : ''}">${v.score}</span></td>`;
+  };
+  const nine = (from: number) => {
+    const refs = Array.from({ length: 9 }, (_, i) => from + i);
+    const par = refs.reduce((a, r0) => a + app.course.hole(r0).par, 0);
+    const played = refs.filter((r0) => views.has(r0));
+    const score = played.reduce((a, r0) => a + views.get(r0)!.score, 0);
+    const putts = played.reduce((a, r0) => a + views.get(r0)!.putts, 0);
+    return `<table class="card-t"><tr><th>Hole</th>${refs.map((r0) => `<th>${r0}</th>`).join('')}<th>${from === 1 ? 'Out' : 'In'}</th></tr>
+      <tr><td>Par</td>${refs.map((r0) => `<td class="muted">${app.course.hole(r0).par}</td>`).join('')}<td class="muted">${par}</td></tr>
+      <tr><td>Score</td>${refs.map(cell).join('')}<td><b>${played.length ? score : '–'}</b></td></tr>
+      <tr><td>Putts</td>${refs.map((r0) => `<td class="muted">${views.get(r0)?.putts ?? '–'}</td>`).join('')}<td class="muted">${played.length ? putts : '–'}</td></tr></table>`;
+  };
+  const all = [...views.values()];
+  const total = all.reduce((a, v) => a + v.score, 0), par = all.reduce((a, v) => a + v.par, 0);
+  modal(`<h2>Scorecard · ${new Date(r.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</h2>
+    <div class="scroll-x">${nine(1)}</div><div class="scroll-x" style="margin-top:8px">${nine(10)}</div>
+    <p><b>${all.length ? total : '–'}</b> ${all.length ? `(${total - par === 0 ? 'E' : sgn(total - par, 0)}) over ${all.length} holes` : ''}</p>
+    <button class="btn primary wide" data-act="closemodal">Done</button>`);
+  $('#modal').onclick = null;
 }
 
 function roundFooter() {
@@ -391,12 +503,14 @@ function refresh(opts: { camera?: boolean } = {}) {
   renderTop();
   renderPanel();
   renderModebar();
+  renderHint();
   redraw();
 }
 
 function goHole(ref: number) {
   app.ref = ((ref - 1 + 18) % 18) + 1;
   app.options = null; app.measure = null; app.mode = null;
+  $('#panel').scrollTop = 0;
   refresh({ camera: true });
 }
 
@@ -477,7 +591,7 @@ function finishHoleDialog() {
 }
 
 // ---------------- actions ----------------
-async function getWeather() {
+async function getWeather(quiet = false) {
   try {
     const { lat, lon } = app.course.data.origin;
     const c = await fetchConditions(lat, lon);
@@ -485,9 +599,9 @@ async function getWeather() {
     const r = round();
     if (r) r.conditions = c;
     save();
-    toast(`Wind ${Math.round(c.windMph)} mph from ${compass(c.windFrom)}, ${Math.round(c.tempF)}°F`);
+    if (!quiet) toast(`Wind ${Math.round(c.windMph)} mph from ${compass(c.windFrom)}, ${Math.round(c.tempF)}°F`);
   } catch (e) {
-    toast('Could not get weather. Tap the wind chip to enter it.');
+    if (!quiet) toast('Could not get weather. Tap the wind chip to enter it.');
   }
   app.options = null;
   renderPanel(); redraw();
@@ -510,7 +624,7 @@ function editWeather() {
 }
 
 function startRound() {
-  const r: Round = { id: uid(), date: new Date().toISOString(), teeSet: S().settings.teeSet, conditions: { ...S().conditions }, holes: {}, finished: false };
+  const r: Round = { id: uid(), date: new Date().toISOString(), teeSet: S().settings.teeSet, conditions: { ...S().conditions }, holes: {}, finished: false, trackShots: S().settings.trackShots };
   S().rounds.push(r);
   S().activeRoundId = r.id;
   saveNow(S());
@@ -527,6 +641,7 @@ function startGps() {
       app.fixes.push({ xy: app.course.toXY(p.coords.latitude, p.coords.longitude), acc: Math.max(1, p.coords.accuracy), at: now });
       app.fixes = app.fixes.filter((f) => now - f.at < 12000).slice(-15);
       app.gps = bestFix(app.fixes);
+      maybeAdvance();
       app.gpsError = '';
       if (app.tab === 'play') { renderPanel(); app.scene.setMe(myPos(), usingSim() ? 2 : p.coords.accuracy); }
     },
@@ -611,7 +726,7 @@ function onTap(p: XY) {
   const m = app.mode;
   if (!m && app.scene.currentView === 'course') {
     const ref = app.scene.holeNear(p);
-    if (ref) { app.scene.currentView = 'tee'; goHole(ref); }
+    if (ref) { app.scene.currentView = 'top'; goHole(ref); }
     return;
   }
   if (m?.kind === 'aim') {
@@ -632,6 +747,8 @@ function onTap(p: XY) {
     if (!S().settings.simulateGps && !farFromCourse()) S().settings.simulateGps = true;
   } else {
     app.measure = app.measure && dist(app.measure, p) < 6 ? null : p;
+    if (S().settings.measureHint) { S().settings.measureHint = false; save(); }
+    renderHint();
     redraw();
     return;
   }
@@ -706,6 +823,19 @@ function onClick(e: Event) {
     case 'resetpin': delete S().pins[app.ref]; save(); refresh(); break;
     case 'teeset': S().settings.teeSet = el.dataset.v as TeeSet; save(); refresh(); break;
     case 'startround': startRound(); break;
+    case 'trackshots': S().settings.trackShots = el.dataset.v === '1'; save(); renderPanel(); break;
+    case 'scorecard': scorecard(el.dataset.id); break;
+    case 'qs': if (rec) { rec.strokes = Math.max(1, Math.min(15, (rec.strokes ?? hole().par) + +el.dataset.d!)); if (rec.putts > rec.strokes) rec.putts = rec.strokes; save(); renderPanel(); } break;
+    case 'fw': if (rec) { rec.fairway = rec.fairway === el.dataset.v ? null : (el.dataset.v as HoleRec['fairway']); save(); renderPanel(); } break;
+    case 'quick': if (rec) { rec.quick = true; rec.strokes = rec.strokes ?? Math.max(hole().par, rec.shots.length + rec.putts); if (!rec.putts) rec.putts = 2; save(); app.options = null; refresh(); } break;
+    case 'trackmode': if (rec) { rec.quick = false; save(); startGps(); refresh(); } break;
+    case 'savehole': if (rec) {
+      rec.done = true; saveNow(S()); refreshBag();
+      const v = analyzeHole(app.course, rec, S().settings.handicap);
+      toast(`Hole ${app.ref}: ${v.score}`);
+      if (app.ref === 18 || Object.values(round()!.holes).filter((x) => x.done).length >= 18) { scorecard(); refresh(); }
+      else goHole(app.ref + 1);
+    } break;
     case 'endround':
       ask('End this round?', 'End round').then((ok) => {
         if (!ok) return;
@@ -793,6 +923,9 @@ async function boot() {
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(S()); });
   if (round()) { app.tab = 'play'; startGps(); }
   refresh({ camera: true });
+  const c = S().conditions;
+  if (!c.fetchedAt || Date.now() - Date.parse(c.fetchedAt) > 45 * 60 * 1000) void getWeather(true);
+  if (!S().settings.onboarded) welcome();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   (window as any).__app = app; // handy for debugging

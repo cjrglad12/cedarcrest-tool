@@ -48,6 +48,10 @@ export interface HoleRec {
   holedFromOff: boolean;
   followedPlan: boolean | null;
   done: boolean;
+  /** Quick scoring: total strokes typed in instead of tracking each shot. */
+  strokes?: number;
+  quick?: boolean;
+  fairway?: 'left' | 'hit' | 'right' | null;
 }
 
 export interface Round {
@@ -57,6 +61,7 @@ export interface Round {
   conditions: Conditions;
   holes: Record<number, HoleRec>;
   finished: boolean;
+  trackShots?: boolean; // false = quick scoring by default
 }
 
 export type TeeSet = 'back' | 'middle' | 'forward';
@@ -68,6 +73,9 @@ export interface Settings {
   simulateGps: boolean;
   useMyNumbers: boolean;
   showWind: boolean;
+  onboarded: boolean;
+  trackShots: boolean;
+  measureHint: boolean;
 }
 
 export interface State {
@@ -86,7 +94,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false },
+    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},

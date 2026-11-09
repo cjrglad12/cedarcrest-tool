@@ -37,6 +37,15 @@ const emptySg = (): Record<Category, number> => ({ ott: 0, app: 0, arg: 0, putt:
 
 export function analyzeHole(course: Course, rec: HoleRec, handicap: number): HoleView {
   const hole = course.hole(rec.ref);
+  if (rec.quick || (!rec.shots.length && rec.strokes)) {
+    // Quick score: no shot detail, so no strokes-gained split.
+    const score = rec.strokes ?? hole.par;
+    return {
+      ref: rec.ref, par: hole.par, score, putts: rec.putts, firstPuttFt: null, firstPuttEstimated: false, shots: [], sg: emptySg(),
+      fairway: hole.par >= 4 && rec.fairway ? rec.fairway === 'hit' : null,
+      gir: score - rec.putts <= hole.par - 2, followedPlan: rec.followedPlan,
+    };
+  }
   const pin = rec.pin;
   const sg = emptySg();
   const shots: ShotView[] = [];
@@ -96,7 +105,7 @@ export function analyzeHole(course: Course, rec: HoleRec, handicap: number): Hol
     firstPuttEstimated,
     shots,
     sg,
-    fairway: hole.par >= 4 && tee ? shots[0]?.endLie === 'fairway' : null,
+    fairway: hole.par >= 4 && rec.fairway ? rec.fairway === 'hit' : hole.par >= 4 && tee ? shots[0]?.endLie === 'fairway' : null,
     gir: reachedGreenAt !== null ? reachedGreenAt <= hole.par - 2 : holedOut && strokes <= hole.par - 2,
     followedPlan: rec.followedPlan,
   };
