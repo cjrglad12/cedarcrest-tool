@@ -36,6 +36,8 @@ export interface CourseData {
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   terrain: { file: string; cols: number; rows: number; cell: number; minX: number; minY: number; minH: number; maxH: number; scale: number };
   canopy?: { file: string; source: string }; // tree heights (m) on the terrain grid
+  /** 1 m elevation patches around each green (same units as the terrain grid). */
+  greens?: { file: string; scale: number; patches: { ref: number; minX: number; minY: number; cols: number; rows: number; cell: number; offset: number }[] };
   /** Scorecard tee names, ratings and slopes by tee set (from the published scorecard). */
   tees?: Partial<Record<'back' | 'middle' | 'forward', { name: string; rating: number; slope: number; yards: number }>>;
   landmarks?: {
@@ -107,8 +109,11 @@ export class Course {
   private gw = 0;
   private gh = 0;
 
-  constructor(data: CourseData, raw: Uint16Array, canopy?: Uint8Array) {
+  private greenH: Uint16Array | null = null;
+
+  constructor(data: CourseData, raw: Uint16Array, canopy?: Uint8Array, greens?: Uint16Array) {
     this.data = data;
+    this.greenH = greens ?? null;
     this.canopy = canopy ?? new Uint8Array(raw.length);
     const t = data.terrain;
     this.heights = new Float32Array(raw.length);
@@ -173,19 +178,30 @@ export class Course {
 
   static async load(base = './data/'): Promise<Course> {
     const data: CourseData = await (await fetch(base + 'course.json')).json();
-    const [buf, can] = await Promise.all([
+    const [buf, can, grn] = await Promise.all([
       fetchBinary(base + data.terrain.file),
       data.canopy ? fetchBinary(base + data.canopy.file).catch(() => null) : null,
+      data.greens ? fetchBinary(base + data.greens.file).catch(() => null) : null,
     ]);
-    return new Course(data, new Uint16Array(buf), can ? new Uint8Array(can) : undefined);
+    return new Course(data, new Uint16Array(buf), can ? new Uint8Array(can) : undefined, grn ? new Uint16Array(grn) : undefined);
   }
 
   get holes() { return this.data.holes; }
   hole(ref: number) { return this.data.holes.find((h) => h.ref === ref)!; }
   feature(id: string | null) { return id ? this.byId.get(id) : undefined; }
 
-  /** Ground height (meters above the course's lowest point), bilinear. */
+  /** Ground height (meters above the course's lowest point), bilinear. Uses 1 m detail on greens. */
   height(x: number, y: number): number {
+    const gp = this.data.greens;
+    if (gp && this.greenH) {
+      for (const p of gp.patches) {
+        const gx = (x - p.minX) / p.cell, gy = (y - p.minY) / p.cell;
+        if (gx < 0 || gy < 0 || gx > p.cols - 1.001 || gy > p.rows - 1.001) continue;
+        const c = Math.floor(gx), r = Math.floor(gy), fx = gx - c, fy = gy - r;
+        const i = p.offset + r * p.cols + c, G = this.greenH, k = gp.scale;
+        return ((G[i] * (1 - fx) + G[i + 1] * fx) * (1 - fy) + (G[i + p.cols] * (1 - fx) + G[i + p.cols + 1] * fx) * fy) * k;
+      }
+    }
     const t = this.data.terrain;
     let gx = (x - t.minX) / t.cell, gy = (y - t.minY) / t.cell;
     gx = Math.max(0, Math.min(t.cols - 1.001, gx));

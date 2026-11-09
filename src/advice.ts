@@ -2,6 +2,7 @@
 // distance and left/right spread, then pick the one with the lowest expected score.
 import { Course, Hole, XY, Lie, YD, TREE_M, dist, bearing, fromBearing, pointInFeature, toYds } from './course';
 import { Conditions, carryFactor } from './conditions';
+import { groundFactor } from './tips';
 import { expected } from './sg';
 import type { Club, PlanStep } from './store';
 
@@ -15,6 +16,7 @@ export interface Ctx {
   bag: Club[];
   handicap: number;
   leftHanded?: boolean;
+  wet?: boolean; // soft ground: less roll
 }
 
 /**
@@ -126,7 +128,7 @@ export function treeStop(ctx: Ctx, to: XY, apex: number): XY | null {
 /** Average carry-and-roll in meters for a shot on this bearing, after wind, temperature, lie and slope. */
 export function meanDistance(ctx: Ctx, club: Club, brg: number, swing = 1): number {
   const { course, from, cond } = ctx;
-  const base = club.yds * YD * swing * LIE_DISTANCE[ctx.lie] * carryFactor(cond, brg) * lieEffect(ctx, brg).distance;
+  const base = club.yds * YD * swing * LIE_DISTANCE[ctx.lie] * carryFactor(cond, brg) * lieEffect(ctx, brg).distance * groundFactor(club.name, !!ctx.wet, cond);
   const h0 = course.height(from[0], from[1]);
   let d = base;
   for (let k = 0; k < 3; k++) {

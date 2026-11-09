@@ -6,17 +6,27 @@ export interface Conditions {
   windFrom: number; // degrees, meteorological (direction the wind blows FROM)
   tempF: number;
   fetchedAt: string | null; // null = entered by hand
+  rain24in?: number; // rain in the last 24 hours, inches
 }
 
 export const CALM: Conditions = { windMph: 0, gustMph: 0, windFrom: 180, tempF: 75, fetchedAt: null };
 
 export async function fetchConditions(lat: number, lon: number): Promise<Conditions> {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}` +
-    '&current=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=mph&temperature_unit=fahrenheit';
+    '&current=temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=mph&temperature_unit=fahrenheit' +
+    '&hourly=precipitation&precipitation_unit=inch&past_days=1&forecast_days=1&timezone=auto';
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Weather unavailable (${res.status})`);
-  const c = (await res.json()).current;
-  return { windMph: c.wind_speed_10m, gustMph: c.wind_gusts_10m, windFrom: c.wind_direction_10m, tempF: c.temperature_2m, fetchedAt: new Date().toISOString() };
+  const j = await res.json();
+  const c = j.current;
+  // Rain over the 24 hours before now.
+  let rain24in = 0;
+  const times: string[] = j.hourly?.time ?? [], rain: number[] = j.hourly?.precipitation ?? [];
+  const now = c.time as string;
+  const idx = times.findIndex((t) => t > now);
+  const end = idx < 0 ? times.length : idx;
+  for (let i = Math.max(0, end - 24); i < end; i++) rain24in += rain[i] ?? 0;
+  return { windMph: c.wind_speed_10m, gustMph: c.wind_gusts_10m, windFrom: c.wind_direction_10m, tempF: c.temperature_2m, fetchedAt: new Date().toISOString(), rain24in: Math.round(rain24in * 100) / 100 };
 }
 
 /** Wind relative to a shot heading. head > 0 = into the wind; cross > 0 = blowing left-to-right. */

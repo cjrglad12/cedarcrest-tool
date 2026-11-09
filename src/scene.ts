@@ -8,7 +8,7 @@ import { Course, Hole, XY, Feature, dist, bearing, YD, TREE_M, pointInFeature } 
 
 export interface Arc { from: XY; to: XY; color: string; label?: string; dashed?: boolean; width?: number }
 export interface Ellipse { center: XY; along: number; across: number; bearing: number; color: string }
-export type ViewName = 'tee' | 'top' | 'green' | 'course';
+export type ViewName = 'tee' | 'top' | 'green' | 'course' | 'putt' | 'puttTop';
 export interface Wind { windFrom: number; windMph: number }
 
 const COLORS = {
@@ -604,6 +604,7 @@ export class HoleScene {
     this.showLabelsFor(name);
     this.buildWind();
     const flat = name !== 'tee';
+    this.controls.minDistance = 15;
     this.controls.enableRotate = !flat;
     this.controls.screenSpacePanning = flat;
     this.controls.enableDamping = !flat;
@@ -809,6 +810,150 @@ export class HoleScene {
     if (deg !== this.lastCompass) { this.lastCompass = deg; this.onCompass(deg); }
   }
 
+  // ---------- putting ----------
+  puttActive = false;
+  puttPlacing = false;
+  /** Called while dragging the aim point (`done` on release). */
+  onAim: (p: XY | null, done: boolean) => void = () => {};
+  private putt = new THREE.Group();
+  private puttSurface: THREE.Mesh | null = null;
+  private puttDyn = new THREE.Group(); // ball, aim, path
+  private puttRef = -1;
+  private puttBase = 0;
+  static PUTT_EX = 5; // vertical exaggeration, so breaks are visible
+
+  private puttY(p: XY, lift = 0) {
+    return (this.course.height(p[0], p[1]) - this.puttBase) * HoleScene.PUTT_EX + this.y(this.pin) + 0.5 + lift;
+  }
+  private pv(p: XY, lift = 0) { return new THREE.Vector3(p[0], this.puttY(p, lift), -p[1]); }
+
+  /** A scale model of this hole's green (1 m elevation, slopes exaggerated and colored). */
+  private buildPuttSurface() {
+    if (!this.hole || this.puttRef === this.hole.ref) return;
+    for (const o of [...this.putt.children]) if (o !== this.puttDyn) { this.putt.remove(o); (o as THREE.Mesh).geometry?.dispose(); }
+    this.puttRef = this.hole.ref;
+    const g = this.course.greenOf(this.hole);
+    const ring = g ? g.rings[0] : [this.pin];
+    const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+    const M = 6, step = 0.5;
+    const x0 = Math.min(...xs) - M, x1 = Math.max(...xs) + M, y0 = Math.min(...ys) - M, y1 = Math.max(...ys) + M;
+    this.puttBase = this.course.height(this.pin[0], this.pin[1]);
+    const nx = Math.ceil((x1 - x0) / step) + 1, ny = Math.ceil((y1 - y0) / step) + 1;
+    const pos = new Float32Array(nx * ny * 3), col = new Float32Array(nx * ny * 3);
+    const c = new THREE.Color(), base = new THREE.Color('#5fae48'), fringe = new THREE.Color('#3f7f31');
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const p: XY = [x0 + i * step, y0 + j * step], k = j * nx + i;
+      pos[k * 3] = p[0]; pos[k * 3 + 1] = this.puttY(p); pos[k * 3 + 2] = -p[1];
+      const e = 0.5, H = (a: number, b: number) => this.course.height(a, b);
+      const pct = Math.hypot(H(p[0] + e, p[1]) - H(p[0] - e, p[1]), H(p[0], p[1] + e) - H(p[0], p[1] - e)) / (2 * e) * 100;
+      const onGreen = g ? pointInFeature(p, g) : true;
+      c.copy(onGreen ? base : fringe).lerp(slopeTint(pct), onGreen ? 0.32 : 0.1);
+      // light stripes so the surface reads as grass and shows its shape
+      if (onGreen && Math.floor((p[0] + p[1]) / 1.5) % 2) c.multiplyScalar(1.05);
+      col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b;
+    }
+    const idx: number[] = [];
+    for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) { const a = j * nx + i; idx.push(a, a + 1, a + nx, a + 1, a + nx + 1, a + nx); }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    this.puttSurface = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    this.putt.add(this.puttSurface);
+    // cup and flagstick (flagstick at real height)
+    const cup = new THREE.Mesh(new THREE.CircleGeometry(0.054, 24), new THREE.MeshBasicMaterial({ color: 0x111111 }));
+    cup.rotation.x = -Math.PI / 2; cup.position.copy(this.pv(this.pin, 0.01));
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 2.1, 6), new THREE.MeshLambertMaterial({ color: 0xf2f2f2 }));
+    pole.position.copy(this.pv(this.pin, 1.05));
+    const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.35), new THREE.MeshBasicMaterial({ color: 0xe53935, side: THREE.DoubleSide }));
+    flag.position.copy(this.pv(this.pin, 1.9)).add(new THREE.Vector3(0.25, 0, 0));
+    this.putt.add(cup, pole, flag);
+    if (!this.putt.children.includes(this.puttDyn)) this.putt.add(this.puttDyn);
+  }
+
+  /** Show (or hide with null) the putting model, with the ball, aim point and predicted roll. */
+  setPutt(state: { ball: XY; aim: XY; path: XY[]; holed: boolean } | null) {
+    const on = !!state;
+    if (on !== this.puttActive) {
+      this.puttActive = on;
+      if (on) { this.buildPuttSurface(); if (!this.group.children.includes(this.putt)) this.group.add(this.putt); }
+      const hide = [this.backdrop, this.current?.mesh, this.current?.trees, this.landmarks, this.overlay, this.pinObj, this.teeObj, this.pinIcon, this.teeIcon, this.holeLine, this.greenSlope, this.yardMarks, this.windGroup, this.me];
+      for (const o of hide) if (o) o.visible = !on;
+      this.putt.visible = on;
+      if (!on) { this.view('green'); return; }
+    }
+    if (!state) return;
+    for (const o of [...this.puttDyn.children]) { this.puttDyn.remove(o); (o as THREE.Mesh).geometry?.dispose(); }
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12), new THREE.MeshLambertMaterial({ color: 0xffffff }));
+    ball.position.copy(this.pv(state.ball, 0.05));
+    // straight aim line and aim marker
+    const aimLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([this.pv(state.ball, 0.03), this.pv(state.aim, 0.03)]), new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.15, gapSize: 0.1 }));
+    aimLine.computeLineDistances();
+    const aimRing = new THREE.Mesh(new THREE.RingGeometry(0.1, 0.17, 28), new THREE.MeshBasicMaterial({ color: 0xffd54f, side: THREE.DoubleSide }));
+    aimRing.rotation.x = -Math.PI / 2; aimRing.position.copy(this.pv(state.aim, 0.03));
+    const aimStick = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.9, 6), new THREE.MeshBasicMaterial({ color: 0xffd54f }));
+    aimStick.position.copy(this.pv(state.aim, 0.45));
+    const aimTop = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 10), new THREE.MeshBasicMaterial({ color: 0xffd54f }));
+    aimTop.position.copy(this.pv(state.aim, 0.92));
+    this.puttDyn.add(ball, aimLine, aimRing, aimStick, aimTop);
+    if (state.path.length > 1) {
+      const pts = state.path.map((p) => this.pv(p, 0.04));
+      const curve = new THREE.CatmullRomCurve3(pts);
+      this.puttDyn.add(new THREE.Mesh(new THREE.TubeGeometry(curve, Math.min(400, pts.length * 2), 0.025, 6, false), new THREE.MeshBasicMaterial({ color: state.holed ? 0x2ecc71 : 0xff8a3d })));
+      const end = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), new THREE.MeshBasicMaterial({ color: state.holed ? 0x2ecc71 : 0xff8a3d }));
+      end.position.copy(pts[pts.length - 1]);
+      this.puttDyn.add(end);
+    }
+    this.lastPutt = state;
+    this.render();
+  }
+  private lastPutt: { ball: XY; aim: XY } | null = null;
+
+  /** Putting cameras: low behind the ball looking at the hole, or straight down over the putt. */
+  puttView(kind: 'pov' | 'above') {
+    if (!this.puttActive || !this.lastPutt) return;
+    this.currentView = kind === 'pov' ? 'putt' : 'puttTop';
+    this.group.updateMatrixWorld(true);
+    const ballW = this.group.localToWorld(this.pv(this.lastPutt.ball));
+    const holeW = this.group.localToWorld(this.pv(this.pin));
+    const flatDir = holeW.clone().sub(ballW).setY(0);
+    const len = Math.max(1, flatDir.length());
+    flatDir.normalize();
+    this.controls.enableRotate = true;
+    this.controls.enableDamping = true;
+    this.controls.screenSpacePanning = false;
+    this.controls.touches = { ONE: -1 as unknown as THREE.TOUCH, TWO: THREE.TOUCH.DOLLY_ROTATE };
+    this.controls.mouseButtons = { LEFT: -1 as unknown as THREE.MOUSE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+    this.controls.minDistance = 1;
+    if (kind === 'pov') {
+      this.camera.position.copy(ballW).addScaledVector(flatDir, -Math.min(4, 1.5 + len * 0.15)).add(new THREE.Vector3(0, 1.1 + len * 0.06, 0));
+      this.controls.target.copy(ballW.clone().lerp(holeW, 0.6));
+    } else {
+      const aimW = this.group.localToWorld(this.pv(this.lastPutt.aim));
+      const pts = [ballW, holeW, aimW];
+      const mid = new THREE.Vector3(pts.reduce((a, v) => a + v.x, 0) / 3, ballW.y, pts.reduce((a, v) => a + v.z, 0) / 3);
+      const span = Math.max(...pts.map((v) => Math.hypot(v.x - mid.x, v.z - mid.z)));
+      const h = (span * 1.35 + 2) / Math.tan(((this.camera.fov / 2) * Math.PI) / 180);
+      this.camera.position.copy(mid).add(new THREE.Vector3(0, h, 0)).addScaledVector(flatDir, -h * 0.02);
+      this.controls.target.copy(mid);
+    }
+    this.controls.update();
+    this.render();
+  }
+
+  private pickPutt(clientX: number, clientY: number): XY | null {
+    if (!this.puttSurface) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    const hit = ray.intersectObject(this.puttSurface)[0];
+    if (!hit) return null;
+    const local = this.group.worldToLocal(hit.point.clone());
+    return [local.x, -local.z];
+  }
+
   focus(p: XY) {
     const w = this.group.localToWorld(this.v3(p));
     this.camera.position.add(w.clone().sub(this.controls.target));
@@ -821,8 +966,31 @@ export class HoleScene {
   private setupTap() {
     const c = this.renderer.domElement;
     let down: { x: number; y: number; t: number } | null = null;
-    c.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+    const pointers = new Set<number>();
+    let aiming = false;
+    c.addEventListener('pointerdown', (e) => {
+      pointers.add(e.pointerId);
+      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+      // Putting: one finger (or the left mouse button) drags the aim point.
+      if (this.puttActive && !this.puttPlacing && pointers.size === 1 && (e.pointerType !== 'mouse' || e.button === 0)) {
+        const p = this.pickPutt(e.clientX, e.clientY);
+        if (p) { aiming = true; c.setPointerCapture(e.pointerId); this.onAim(p, false); }
+      } else if (pointers.size > 1) aiming = false;
+    });
+    c.addEventListener('pointermove', (e) => {
+      if (!aiming || pointers.size > 1) return;
+      const p = this.pickPutt(e.clientX, e.clientY);
+      if (p) this.onAim(p, false);
+    });
+    const end = (e: PointerEvent) => {
+      pointers.delete(e.pointerId);
+      if (aiming) { aiming = false; const p = this.pickPutt(e.clientX, e.clientY); this.onAim(p, true); }
+    };
+    c.addEventListener('pointercancel', end);
     c.addEventListener('pointerup', (e) => {
+      const wasAiming = aiming;
+      end(e);
+      if (wasAiming) { down = null; return; }
       if (!down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       const quick = performance.now() - down.t < 450;
@@ -834,6 +1002,7 @@ export class HoleScene {
   }
 
   pick(clientX: number, clientY: number): XY | null {
+    if (this.puttActive) return this.pickPutt(clientX, clientY);
     if (!this.current) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
@@ -857,6 +1026,18 @@ export function dispersion(club: { yds: number; sdYds: number; sdDeg: number }) 
   // ~80% of shots land inside 1.3 standard deviations in each direction
   const k = 1.3;
   return { along: club.sdYds * YD * k, across: Math.tan((club.sdDeg * Math.PI) / 180) * club.yds * YD * k };
+}
+
+/** Smooth version of the slope colors, for shading the putting surface without blocky edges. */
+function slopeTint(pct: number): THREE.Color {
+  const stops: [number, string][] = [[0, '#7fd1ff'], [1, '#bfe9a0'], [2, '#ffe066'], [3, '#ff9f43'], [4.5, '#ff5a4f']];
+  for (let i = 1; i < stops.length; i++) {
+    if (pct <= stops[i][0]) {
+      const f = (pct - stops[i - 1][0]) / (stops[i][0] - stops[i - 1][0]);
+      return new THREE.Color(stops[i - 1][1]).lerp(new THREE.Color(stops[i][1]), Math.max(0, f));
+    }
+  }
+  return new THREE.Color(stops[stops.length - 1][1]);
 }
 
 /** Green slope color: under 1% flat, then gentle, firm and severe. */

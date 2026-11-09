@@ -300,3 +300,52 @@ describe('slope under the ball', () => {
     expect(lieEffect({ ...ctx, course: fake3, leftHanded: true }, 0).pullDeg).toBeGreaterThan(0);
   });
 });
+
+describe('putting physics', () => {
+  it('a flat putt rolls the stimp distance', async () => {
+    const { roll, speedFor } = await import('../src/putt');
+    const flat = { height: () => 0, hole: [100, 100] as [number, number], stimp: 10 };
+    const r = roll(flat, [0, 0], 0, speedFor(10, 3.048));
+    expect(r.stop[1]).toBeCloseTo(3.048, 1);
+    expect(Math.abs(r.stop[0])).toBeLessThan(0.01);
+  });
+  it('a ball rolling across a slope breaks downhill', async () => {
+    const { roll, speedFor } = await import('../src/putt');
+    // Ground falls toward +x (east) at 2%: a putt hit north curls east.
+    const tilted = { height: (x: number) => -0.02 * x, hole: [100, 100] as [number, number], stimp: 10 };
+    const r = roll(tilted, [0, 0], 0, speedFor(10, 6));
+    expect(r.stop[0]).toBeGreaterThan(0.3);
+  });
+  it('finds a line that holes a breaking putt, aiming uphill of the hole', async () => {
+    const { findLine } = await import('../src/putt');
+    const g = { height: (x: number) => -0.02 * x, hole: [0, 5] as [number, number], stimp: 10 };
+    const read = findLine(g, [0, 0])!;
+    expect(read.result.holed).toBe(true);
+    expect(read.breakM).toBeLessThan(0); // slope falls to the right, so aim left
+    expect(read.result.pastHole).toBeGreaterThan(0);
+    expect(read.result.pastHole).toBeLessThan(1);
+  });
+  it('re-rolling from the best aim point gives the same result', async () => {
+    const { findLine, roll, speedFor } = await import('../src/putt');
+    const g = { height: (x: number) => -0.02 * x, hole: [0, 5] as [number, number], stimp: 10 };
+    const read = findLine(g, [0, 0])!;
+    const brg = (Math.atan2(read.aim[0], read.aim[1]) * 180) / Math.PI;
+    const again = roll(g, [0, 0], brg, speedFor(10, Math.hypot(...read.aim)));
+    expect(again.holed).toBe(true);
+  });
+  it('downhill putts need less pace than uphill ones', async () => {
+    const { findLine } = await import('../src/putt');
+    const down = findLine({ height: (_x: number, y: number) => -0.03 * y, hole: [0, 5], stimp: 10 }, [0, 0])!;
+    const up = findLine({ height: (_x: number, y: number) => 0.03 * y, hole: [0, 5], stimp: 10 }, [0, 0])!;
+    expect(down.flatDistance).toBeLessThan(up.flatDistance);
+  });
+  it('reads a real Cedar Crest green quickly', async () => {
+    const { findLine } = await import('../src/putt');
+    const h = course.hole(2);
+    const g = { height: (x: number, y: number) => course.height(x, y), hole: h.pin, stimp: 10 };
+    const t0 = Date.now();
+    const read = findLine(g, [h.pin[0] - 4, h.pin[1] - 5]);
+    expect(read).not.toBeNull();
+    expect(Date.now() - t0).toBeLessThan(3000);
+  });
+});

@@ -1,5 +1,7 @@
 import './styles.css';
 import { bestFix, fmtHcp, parseHcp } from './gps';
+import { findLine, roll, speedFor, rise, describeAim, M_TO_FT, PuttGreen, PuttResult, PuttRead } from './putt';
+import { tipsFor, isWet, Tip } from './tips';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
 import { Conditions, fetchConditions, windComponents, playsLike, compass } from './conditions';
@@ -34,6 +36,7 @@ const app = {
   stats: [] as ClubStat[],
   bag: [] as Club[],
   watchId: null as number | null,
+  putt: null as null | { ball: XY; aim: XY; result: PuttResult; best: PuttRead | null; placing: boolean },
   fixes: [] as { xy: XY; acc: number; at: number }[], // recent GPS readings
 };
 
@@ -60,7 +63,7 @@ function refreshBag() {
 }
 
 function ctx(from: XY, lie: Lie): Ctx {
-  return { course: app.course, hole: hole(), from, lie, pin: pin(), cond: cond(), bag: app.bag, handicap: S().settings.handicap, leftHanded: S().settings.leftHanded };
+  return { course: app.course, hole: hole(), from, lie, pin: pin(), cond: cond(), bag: app.bag, handicap: S().settings.handicap, leftHanded: S().settings.leftHanded, wet: wetNow() };
 }
 
 let warningUntil = 0;
@@ -100,8 +103,13 @@ function renderTop() {
     <button class="navbtn" data-act="menu" aria-label="Menu">☰</button>`;
   $('#tabs').innerHTML = (['plan', 'play', 'stats'] as Tab[]).map((k) => `<button data-tab="${k}" class="${app.tab === k ? 'on' : ''}">${{ plan: 'Plan', play: round() ? 'Play ●' : 'Play', stats: 'Stats' }[k]}</button>`).join('');
   const cur = app.scene?.currentView;
+  if (app.putt) {
+    $('#viewbtns').innerHTML = `<button data-act="puttpov" class="${cur === 'putt' ? 'on' : ''}">Behind ball</button><button data-act="puttabove" class="${cur === 'puttTop' ? 'on' : ''}">Above</button><button data-act="puttexit">✕ Done</button>`;
+    return;
+  }
   $('#viewbtns').innerHTML = (app.scene?.userMoved ? `<button class="reset" data-act="resetview">⟲ Reset</button>` : '') + `<button class="compass" data-act="northup" aria-label="Compass: tap for the course map, north up"><i id="needle">▲</i><small>N</small></button>` +
-    (['top', 'tee', 'green', 'course'] as ViewName[]).map((v) => `<button data-view="${v}" class="${cur === v ? 'on' : ''}">${{ top: 'Hole', tee: '3D', green: 'Green', course: 'Course' }[v]}</button>`).join('') +
+    (['top', 'tee', 'green', 'course'] as const).map((v) => `<button data-view="${v}" class="${cur === v ? 'on' : ''}">${{ top: 'Hole', tee: '3D', green: 'Green', course: 'Course' }[v]}</button>`).join('') +
+    (cur === 'green' ? '<button class="reset" data-act="puttstart">⛳ Read a putt</button>' : '') +
     `<button data-act="wind" class="${S().settings.showWind ? 'on' : ''}" aria-pressed="${S().settings.showWind}">Wind</button>` +
     (myPos() ? '<button data-act="viewme">Me</button>' : '');
   setNeedle(lastNeedle);
@@ -187,6 +195,13 @@ function elevText(from: XY, to: XY, who: 'you' | 'the tee' = 'you') {
   const yds = Math.round(Math.abs(rise) * 1.094); // roughly a yard of distance per yard of height
   if (Math.abs(ft) < 6) return `Green is about level with ${who}`;
   return `Green is <b>${Math.abs(ft)} ft ${ft > 0 ? 'above' : 'below'}</b> ${who}: plays about <b>${yds} yds ${ft > 0 ? 'longer' : 'shorter'}</b>`;
+}
+
+const wetNow = () => isWet(cond(), S().settings.wet);
+
+function tipsHtml(tips: Tip[]) {
+  if (!tips.length) return '';
+  return `<ul class="tips">${tips.map((t) => `<li><span aria-hidden="true">${t.icon}</span><span>${t.text}</span></li>`).join('')}</ul>`;
 }
 
 let lastNeedle = 0;
@@ -282,10 +297,12 @@ function renderPlan(): string {
     <div class="row wrap small" style="margin-top:8px">
       <span class="chip" data-act="editwx">💨 ${c.windMph < 1 ? 'Calm' : `${Math.round(c.windMph)} mph ${compass(c.windFrom)} · ${windText(t.center, pinXY)}`}</span>
       <span class="chip">🌡 ${Math.round(c.tempF)}°F</span>
+      <button class="chip" data-act="wet" aria-label="Course wetness: tap to change">💧 ${{ auto: wetNow() ? 'Wet (rain)' : 'Dry', wet: 'Wet', dry: 'Dry' }[S().settings.wet]}${S().settings.wet === 'auto' ? '' : ' (set)'}</button>
       <button class="btn sm" data-act="wx">${c.fetchedAt ? 'Update' : 'Get'} weather</button>
     </div>
 
     <div class="elev">${elevText(t.center, pinXY, 'the tee')}</div>
+    ${tipsHtml(tipsFor({ cond: c, wetSetting: S().settings.wet, where: 'plan', shotYds: toYds(dist(t.center, pinXY)) > 260 ? 230 : toYds(dist(t.center, pinXY)), shotBearing: bearing(t.center, pinXY) }))}
 
     <h3>Your plan</h3>
     ${steps.length ? `<ul class="list">${stepRows}</ul>` : '<p class="muted small">No plan yet. Let the app suggest one, or add shots and tap the map to place each target.</p>'}
@@ -301,6 +318,9 @@ function renderPlan(): string {
 
     <h3>Hazards from the tee</h3>
     ${hz.length ? `<table><tr><th>Hazard</th><th>Reach</th><th>Carry</th></tr>${hz.map((z) => `<tr><td>${z.kind === 'water' ? '💧 Water' : '⛱ Bunker'} ${z.side}</td><td>${y0(z.reach)}</td><td>${y0(z.carry)}</td></tr>`).join('')}</table>` : '<p class="muted small">No bunkers or water near the line.</p>'}
+
+    <h3>Putting</h3>
+    <button class="btn" data-act="readputt">⛳ Read a putt on this green</button>
 
     <h3>Pin &amp; notes</h3>
     <div class="row wrap"><button class="btn sm" data-act="setpin">Move pin</button>${S().pins[app.ref] ? '<button class="btn sm" data-act="resetpin">Reset pin</button>' : '<span class="small muted">Using the mapped pin</span>'}</div>
@@ -420,6 +440,7 @@ function renderPlay(): string {
       <div class="elev">${elevText(from, rec.pin)}</div>
       ${carriesHtml(from, rec.pin)}
       ${me ? lieHtml(me, rec.pin) : ''}
+      ${tipsHtml(tipsFor({ cond: cond(), wetSetting: S().settings.wet, where: 'shot', shotYds: toYds(dist(from, rec.pin)), shotBearing: bearing(from, rec.pin) }).slice(0, 2))}
       ${app.options ? renderOptions() : ''}
       <div class="scorebox">
         <div><div class="small muted">Score</div><div class="stepper big"><button data-act="qs" data-d="-1" aria-label="One less stroke">−</button><b>${strokes}</b><button data-act="qs" data-d="1" aria-label="One more stroke">+</button></div><div class="tiny muted">${strokes - h.par === 0 ? 'Par' : toPar(strokes - h.par)}</div></div>
@@ -445,6 +466,8 @@ function renderPlay(): string {
       <button class="btn sm" data-act="playopts">What should I hit?</button></div>
     ${carriesHtml(from, rec.pin)}
     ${me ? lieHtml(me, rec.pin) : ''}
+    ${tipsHtml(tipsFor({ cond: cond(), wetSetting: S().settings.wet, where: 'shot', shotYds: toYds(dist(from, rec.pin)), shotBearing: bearing(from, rec.pin) }).slice(0, 2))}
+    ${rec.greenMark ? '<button class="btn primary wide" data-act="readputt" style="margin:6px 0">⛳ Read this putt</button>' : ''}
     ${app.options ? renderOptions() : ''}
     ${rec.shots.length ? `<ul class="list">${shotRows}</ul>` : '<p class="small muted" style="margin:4px 0">Stand at your ball and tap <b>Mark shot</b> before each swing.</p>'}
     <div class="row" style="margin-top:6px">
@@ -595,10 +618,10 @@ function renderPanel() {
   const panel = $('#panel');
   // Keep the scroll position while working on one screen; start at the top of a new one.
   const rec = holeRec();
-  const screen = `${app.tab}|${app.ref}|${round()?.id ?? ''}|${rec?.done ?? ''}|${rec?.quick ?? ''}`;
+  const screen = `${app.putt ? 'putt' : app.tab}|${app.ref}|${round()?.id ?? ''}|${rec?.done ?? ''}|${rec?.quick ?? ''}`;
   const scroll = screen === lastScreen ? panel.scrollTop : 0;
   lastScreen = screen;
-  panel.innerHTML = app.tab === 'plan' ? renderPlan() : app.tab === 'play' ? renderPlay() : renderStats();
+  panel.innerHTML = app.putt ? renderPutt() : app.tab === 'plan' ? renderPlan() : app.tab === 'play' ? renderPlay() : renderStats();
   panel.scrollTop = scroll;
 }
 
@@ -611,6 +634,88 @@ function refresh(opts: { camera?: boolean } = {}) {
   renderModebar();
   renderHint();
   redraw();
+}
+
+// ---------------- Putting ----------------
+function puttGreen(): PuttGreen {
+  const stimp = Math.max(6, S().settings.stimp - (wetNow() ? 1.5 : 0));
+  return { height: (x, y) => app.course.height(x, y), hole: pin(), stimp };
+}
+
+/** Where to start the ball: your mark on the green, your position if you're on it, else a sample 20 ft putt. */
+function defaultBall(): XY {
+  const rec = holeRec();
+  if (app.tab === 'play' && rec?.greenMark) return rec.greenMark;
+  const me = myPos();
+  const g = app.course.greenOf(hole());
+  if (me && g && pointInFeature(me, g)) return me;
+  const p = pin(), from = tee().center;
+  const d = 6 / Math.max(1, dist(from, p));
+  return [p[0] + (from[0] - p[0]) * d, p[1] + (from[1] - p[1]) * d];
+}
+
+function startPutt(ball = defaultBall()) {
+  const g = puttGreen();
+  const best = findLine(g, ball);
+  const aim: XY = best?.aim ?? pin();
+  const result = best?.result ?? roll(g, ball, bearing(ball, aim), speedFor(g.stimp, dist(ball, aim)));
+  app.putt = { ball, aim, result, best, placing: false };
+  app.options = null; app.measure = null; app.mode = null;
+  app.scene.setPutt({ ball, aim, path: result.path, holed: result.holed });
+  app.scene.puttView('pov');
+  document.querySelector('.hint')?.remove();
+  renderTop(); renderPanel();
+}
+
+function aimPutt(aim: XY) {
+  const pt = app.putt!;
+  const g = puttGreen();
+  pt.aim = aim;
+  pt.result = roll(g, pt.ball, bearing(pt.ball, aim), speedFor(g.stimp, dist(pt.ball, aim)));
+  app.scene.setPutt({ ball: pt.ball, aim, path: pt.result.path, holed: pt.result.holed });
+}
+
+function exitPutt() {
+  app.putt = null;
+  app.scene.puttPlacing = false;
+  app.scene.setPutt(null);
+  renderTop(); renderPanel(); renderHint(); redraw();
+}
+
+function renderPutt(): string {
+  const pt = app.putt!;
+  const g = puttGreen();
+  const ft = dist(pt.ball, g.hole) * M_TO_FT;
+  const riseIn = rise(g, pt.ball) * 39.37;
+  const r = pt.result;
+  const missSide = () => {
+    // Which side the ball passed the hole on, looking from the ball.
+    const brgHole = bearing(pt.ball, g.hole);
+    const near = r.path.reduce((b, p) => (dist(p, g.hole) < dist(b, g.hole) ? p : b), r.path[0]);
+    const side = ((bearing(pt.ball, near) - brgHole + 540) % 360) - 180;
+    return side > 0 ? 'right' : 'left';
+  };
+  const resultText = r.holed
+    ? `<b class="gain">Drops.</b> At this pace it would finish ${(Math.max(0, r.pastHole) * M_TO_FT).toFixed(1)} ft past.`
+    : `<b class="loss">Misses</b> ${Math.round(r.closest * 39.37)} in ${missSide()}, finishing ${Math.abs(r.pastHole * M_TO_FT).toFixed(1)} ft ${r.pastHole >= 0 ? 'past' : 'short'}.`;
+  const speeds: [number, string][] = [[8, 'Slow'], [9, ''], [10, 'Medium'], [11, ''], [12, 'Fast']];
+  const best = pt.best;
+  const tips = tipsFor({ cond: cond(), wetSetting: S().settings.wet, where: 'putt', puttFt: ft, puttRiseIn: riseIn, stimp: g.stimp, hour: new Date().getHours() });
+  return `
+    <div class="big3">
+      <div><b>${ft < 10 ? ft.toFixed(1) : Math.round(ft)}</b><span>feet</span></div>
+      <div><b>${Math.abs(riseIn) < 1 ? '0' : Math.round(Math.abs(riseIn))}″</b><span>${Math.abs(riseIn) < 1 ? 'level' : riseIn > 0 ? 'uphill' : 'downhill'}</span></div>
+      <div><b>${g.stimp}</b><span>green speed${wetNow() ? ' (wet)' : ''}</span></div>
+    </div>
+    ${best ? `<div class="card"><div class="small muted">Best line</div><b>${describeAim(best.breakM)}</b><div class="small">Hit it like a ${Math.round(best.flatDistance * M_TO_FT)}-ft putt on a flat green${best.flatDistance > dist(pt.ball, g.hole) * 1.15 ? ' (firm)' : best.flatDistance < dist(pt.ball, g.hole) * 0.95 ? ' (soft, it runs)' : ''}.</div></div>` : ''}
+    <div class="elev">Your aim: ${resultText}</div>
+    <p class="small muted" style="margin:4px 0">Drag on the green to move the yellow aim marker. Aim farther away to hit it firmer. The line shows how it rolls.</p>
+    <div class="row wrap"><button class="btn primary" data-act="puttbest">Find the line</button><button class="btn" data-act="puttball">${pt.placing ? 'Tap the green…' : 'Move ball'}</button></div>
+    <div class="small muted" style="margin:10px 0 6px">Green speed (Stimpmeter, feet)</div>
+    <div class="seg">${speeds.map(([v, l]) => `<button class="${S().settings.stimp === v ? 'on' : ''}" data-act="stimp" data-v="${v}">${v}${l ? `<small>${l}</small>` : ''}</button>`).join('')}</div>
+    <h3>Tips</h3>
+    ${tipsHtml(tips)}
+    <p class="tiny muted">Reads use 1 m elevation (within a few cm of USGS survey data), so tilt and tiers are reliable; small bumps under about 1 m, grain and wetness aren't measured. Treat it as a first read and trust your eyes on short putts.</p>`;
 }
 
 /** Big "Hole 7 · Par 5" card for a moment whenever the hole changes. */
@@ -848,6 +953,13 @@ function importData() {
 
 function onTap(p: XY) {
   const m = app.mode;
+  if (app.putt) {
+    if (app.putt.placing) {
+      app.scene.puttPlacing = false;
+      startPutt(p);
+    }
+    return;
+  }
   if (!m && app.scene.currentView === 'course') {
     const ref = app.scene.holeNear(p);
     if (ref) { app.scene.currentView = 'top'; goHole(ref); }
@@ -905,6 +1017,15 @@ function onClick(e: Event) {
     case 'next': goHole(app.ref + 1); break;
     case 'menu': menu(); break;
     case 'northup': app.scene.view('course'); renderTop(); break;
+    case 'puttstart': startPutt(); break;
+    case 'puttexit': exitPutt(); break;
+    case 'puttpov': app.scene.puttView('pov'); renderTop(); break;
+    case 'puttabove': app.scene.puttView('above'); renderTop(); break;
+    case 'puttbest': if (app.putt) { const g = puttGreen(); const b = findLine(g, app.putt.ball); app.putt.best = b; if (b) { aimPutt(b.aim); app.putt.result = b.result; } renderPanel(); } break;
+    case 'puttball': if (app.putt) { app.putt.placing = !app.putt.placing; app.scene.puttPlacing = app.putt.placing; renderPanel(); } break;
+    case 'stimp': S().settings.stimp = +el.dataset.v!; save(); if (app.putt) { const b = findLine(puttGreen(), app.putt.ball); app.putt.best = b; aimPutt(app.putt.aim); } renderPanel(); break;
+    case 'readputt': app.scene.view('green'); startPutt(); break;
+    case 'wet': { const order = ['auto', 'wet', 'dry'] as const; S().settings.wet = order[(order.indexOf(S().settings.wet) + 1) % 3]; save(); app.options = null; renderPanel(); break; }
     case 'resetview': app.scene.view(app.scene.currentView); renderTop(); break;
     case 'wind': {
       S().settings.showWind = !S().settings.showWind;
@@ -1058,6 +1179,11 @@ async function boot() {
   app.scene.onTap = onTap;
   app.scene.onCompass = setNeedle;
   app.scene.onUserMove = () => renderTop();
+  app.scene.onAim = (p, done) => {
+    if (!app.putt) return;
+    if (p) aimPutt(p);
+    if (done) renderPanel();
+  };
   app.scene.setExaggeration(S().settings.exaggerate);
   const hash = +location.hash.replace('#', '');
   if (hash >= 1 && hash <= 18) app.ref = hash;
