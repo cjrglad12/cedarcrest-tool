@@ -61,10 +61,15 @@ export class HoleScene {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
     this.controls.maxPolarAngle = Math.PI * 0.47;
+    this.controls.enableRotate = false;
+    this.controls.screenSpacePanning = true;
+    this.controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
+    this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
     this.controls.minDistance = 15;
     this.controls.maxDistance = 1400;
     this.controls.screenSpacePanning = false;
     this.controls.addEventListener('change', () => this.render());
+    this.controls.addEventListener('start', () => { if (!this.userMoved) { this.userMoved = true; this.onUserMove(true); } });
 
     this.scene.fog = new THREE.Fog(0xcfe3f2, 700, 2200);
     this.scene.add(new THREE.HemisphereLight(0xdfefff, 0x4a5a30, 1.1));
@@ -72,7 +77,7 @@ export class HoleScene {
     sun.position.set(-300, 420, 200);
     this.scene.add(sun);
     this.scene.add(this.group);
-    this.group.add(this.overlay, this.me, this.pinObj, this.teeObj, this.landmarks, this.windGroup, this.greenSlope);
+    this.group.add(this.overlay, this.me, this.pinObj, this.teeObj, this.landmarks, this.windGroup, this.greenSlope, this.yardMarks);
     this.landmarks.add(this.courseOnly);
     this.buildMarkers();
 
@@ -171,7 +176,7 @@ export class HoleScene {
     const t = this.course.data.terrain;
     const region = { minX: t.minX, minY: t.minY, maxX: t.minX + (t.cols - 1) * t.cell, maxY: t.minY + (t.rows - 1) * t.cell };
     this.backdrop = this.buildTerrain(region, 30000, 1.2, null, 0, -1.2);
-    (this.backdrop.material as THREE.MeshLambertMaterial).color.setScalar(0.72);
+    (this.backdrop.material as THREE.MeshLambertMaterial).color.setScalar(0.5);
     this.group.add(this.backdrop);
   }
 
@@ -351,6 +356,30 @@ export class HoleScene {
 
   private holeLine: THREE.Line | null = null;
   private greenSlope = new THREE.Group();
+  private yardMarks = new THREE.Group();
+
+  /** 100 / 150 / 200 / 250 yards-to-the-pin markers along the hole, like sprinkler heads. */
+  private buildYardMarks() {
+    for (const o of [...this.yardMarks.children]) this.yardMarks.remove(o);
+    if (!this.hole) return;
+    const pts: XY[] = [this.pin, ...this.hole.line.slice(1, -1).reverse(), this.teeXY];
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) total += dist(pts[i - 1], pts[i]);
+    for (const yds of [100, 150, 200, 250, 300]) {
+      const m = yds * YD;
+      if (m > total - 30) break;
+      let left = m, at: XY = pts[0];
+      for (let i = 1; i < pts.length; i++) {
+        const seg = dist(pts[i - 1], pts[i]);
+        if (left <= seg) { const f = left / seg; at = [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f]; break; }
+        left -= seg;
+      }
+      const sp = yardSprite(yds);
+      sp.position.copy(this.v3(at, 1));
+      this.yardMarks.add(sp);
+    }
+    this.sizeLabels();
+  }
 
   /**
    * Slope arrows on the green, every 2.5 m: they point downhill and are colored by
@@ -399,7 +428,7 @@ export class HoleScene {
     for (const o of [this.pinIcon, this.teeIcon, this.holeLine]) if (o) this.group.remove(o);
     this.pinIcon = iconSprite('flag');
     this.pinIcon.position.copy(this.v3(this.pin, 1));
-    this.teeIcon = iconSprite('tee');
+    this.teeIcon = iconSprite('tee', this.hole ? String(this.hole.ref) : 'T');
     this.teeIcon.position.copy(this.v3(this.teeXY, 1));
     if (this.hole) {
       const pts = [this.teeXY, ...this.hole.line.slice(1, -1), this.pin];
@@ -413,6 +442,7 @@ export class HoleScene {
       this.group.add(this.holeLine);
     }
     this.group.add(this.pinIcon, this.teeIcon);
+    this.buildYardMarks();
     this.buildGreenSlope();
     this.greenSlope.visible = this.currentView === 'green';
     this.sizeLabels();
@@ -557,6 +587,15 @@ export class HoleScene {
   }
 
   // ---------- camera ----------
+  /** True once the player has dragged or pinched the map since the last standard view. */
+  userMoved = false;
+  onUserMove: (moved: boolean) => void = () => {};
+
+  /**
+   * Standard views. Hole, Green and Course are flat top-down maps (pinch to zoom,
+   * drag to move, no tilting), always with the green toward the top of the screen.
+   * 3D is the free camera from behind the tee.
+   */
   view(name: ViewName) {
     if (!this.hole) return;
     this.currentView = name;
@@ -564,42 +603,60 @@ export class HoleScene {
     this.group.updateMatrixWorld(true);
     this.showLabelsFor(name);
     this.buildWind();
-    if (name === 'course') {
-      const b = this.course.data.bounds;
-      const mid = new THREE.Vector3((b.minX + b.maxX) / 2, 0, -(b.minY + b.maxY) / 2);
-      const span = Math.max((b.maxY - b.minY) * 0.55, ((b.maxX - b.minX) * 0.55) / Math.max(0.5, this.camera.aspect));
-      const h = span / Math.tan(((this.camera.fov / 2) * Math.PI) / 180);
-      this.camera.position.set(mid.x, h, mid.z + h * 0.05);
-      this.controls.target.copy(mid);
-      this.controls.update();
-      this.sizeLabels();
-      this.render();
-      return;
-    }
-    const tee = this.v3(this.teeXY), pin = this.v3(this.pin);
-    const toLocal = (v: THREE.Vector3) => this.group.localToWorld(v.clone());
-    const teeW = toLocal(tee), pinW = toLocal(pin);
-    const len = dist(this.teeXY, this.pin);
-    const dir = pinW.clone().sub(teeW).setY(0).normalize();
-    if (name === 'tee') {
-      const look = teeW.clone().lerp(pinW, Math.min(0.6, 210 / len));
-      this.camera.position.copy(teeW).addScaledVector(dir, -32).add(new THREE.Vector3(0, 22, 0));
-      this.controls.target.copy(look);
-    } else if (name === 'top') {
-      const mid = teeW.clone().lerp(pinW, 0.46);
-      // Fit the whole hole, tee at the bottom and green at the top, slightly tilted.
-      const h = (len * 0.68 + 45) / Math.tan(((this.camera.fov / 2) * Math.PI) / 180);
-      this.camera.position.copy(mid).add(new THREE.Vector3(0, h * 0.95, 0)).addScaledVector(dir, -h * 0.3);
-      this.controls.target.copy(mid);
-    } else {
-      // Look down onto the green from above the approach, clear of trees.
-      const g = this.course.greenOf(this.hole);
-      const c = g ? toLocal(this.v3(centroidOf(g.rings[0]))) : pinW;
-      this.camera.position.copy(c).addScaledVector(dir, -24).add(new THREE.Vector3(0, 52, 0));
-      this.controls.target.copy(c);
-    }
+    const flat = name !== 'tee';
+    this.controls.enableRotate = !flat;
+    this.controls.screenSpacePanning = flat;
+    this.controls.enableDamping = !flat;
+    this.controls.touches = { ONE: flat ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    this.controls.mouseButtons = { LEFT: flat ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
     this.greenSlope.visible = name === 'green';
+    this.yardMarks.visible = name === 'top' || name === 'tee';
+    const tanHalf = Math.tan(((this.camera.fov / 2) * Math.PI) / 180);
+    const toWorld = (p: XY, lift = 0) => this.group.localToWorld(this.v3(p, lift));
+
+    if (name === 'tee') {
+      const teeW = toWorld(this.teeXY), pinW = toWorld(this.pin);
+      const len = dist(this.teeXY, this.pin);
+      const dir = pinW.clone().sub(teeW).setY(0).normalize();
+      this.camera.position.copy(teeW).addScaledVector(dir, -32).add(new THREE.Vector3(0, 22, 0));
+      this.controls.target.copy(teeW.clone().lerp(pinW, Math.min(0.6, 210 / len)));
+    } else {
+      // Fit a set of map points on screen, straight down, green at the top.
+      let pts: XY[];
+      let margin = 25;
+      if (name === 'course') {
+        const b = this.course.data.bounds;
+        pts = [[b.minX, b.minY], [b.maxX, b.maxY]];
+        margin = 0;
+      } else if (name === 'green') {
+        const g = this.course.greenOf(this.hole);
+        pts = g ? g.rings[0] : [this.pin];
+        margin = 14;
+      } else {
+        const g = this.course.greenOf(this.hole);
+        pts = [this.teeXY, ...this.hole.line, this.pin, ...(g ? g.rings[0] : [])];
+      }
+      const w = pts.map((p) => toWorld(p));
+      const minX = Math.min(...w.map((v) => v.x)), maxX = Math.max(...w.map((v) => v.x));
+      const minZ = Math.min(...w.map((v) => v.z)), maxZ = Math.max(...w.map((v) => v.z));
+      const y = w.reduce((a, v) => a + v.y, 0) / w.length;
+      const center = new THREE.Vector3((minX + maxX) / 2, y, (minZ + maxZ) / 2);
+      // Fit inside the part of the map that isn't covered by the buttons (top) and the panel edge (bottom).
+      const H = this.el.clientHeight || 400;
+      const padTop = 56, padBottom = 72;
+      const visible = Math.max(0.4, (H - padTop - padBottom) / H);
+      const halfV = (maxZ - minZ) / 2 + margin, halfH = (maxX - minX) / 2 + margin;
+      const h = Math.max(halfV / (tanHalf * visible), halfH / (tanHalf * this.camera.aspect), 40);
+      // Shift so the content sits in the middle of the visible part (green toward the top = −Z).
+      const metersPerPx = (2 * h * tanHalf) / H;
+      center.z -= ((padTop - padBottom) / 2) * metersPerPx;
+      // A hair of offset toward the tee keeps "up" on screen pointing at the green.
+      this.camera.position.set(center.x, center.y + h, center.z + h * 0.0005);
+      this.controls.target.copy(center);
+    }
     this.controls.update();
+    this.userMoved = false;
+    this.onUserMove(false);
     this.sizeLabels();
     this.render();
   }
@@ -808,7 +865,23 @@ export function slopeColor(pct: number) {
 }
 
 /** Round map pin for the flag or the tee, drawn at a fixed size on screen. */
-function iconSprite(kind: 'flag' | 'tee'): THREE.Sprite {
+/** Small yardage marker: distance to the pin. */
+function yardSprite(yds: number): THREE.Sprite {
+  const cv = document.createElement('canvas');
+  cv.width = 64; cv.height = 40;
+  const g = cv.getContext('2d')!;
+  g.fillStyle = 'rgba(255,255,255,0.92)';
+  g.beginPath(); g.roundRect(2, 2, 60, 36, 18); g.fill();
+  g.fillStyle = '#17221b'; g.font = '700 22px -apple-system, system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(String(yds), 32, 21);
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
+  sp.userData = { w: 64, h: 40, hpx: 17 };
+  sp.renderOrder = 10;
+  return sp;
+}
+
+function iconSprite(kind: 'flag' | 'tee', text = 'T'): THREE.Sprite {
   const cv = document.createElement('canvas');
   cv.width = 64; cv.height = 64;
   const g = cv.getContext('2d')!;
@@ -819,11 +892,11 @@ function iconSprite(kind: 'flag' | 'tee'): THREE.Sprite {
     g.fillStyle = '#333'; g.fillRect(25, 15, 3.5, 34);
     g.fillStyle = '#e53935'; g.beginPath(); g.moveTo(28.5, 15); g.lineTo(46, 22); g.lineTo(28.5, 29); g.fill();
   } else {
-    g.fillStyle = '#fff'; g.font = '800 26px -apple-system, system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('T', 32, 34);
+    g.fillStyle = '#fff'; g.font = `800 ${text.length > 1 ? 24 : 28}px -apple-system, system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 32, 34);
   }
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
-  sp.userData = { w: 64, h: 64, hpx: 30 };
+  sp.userData = { w: 64, h: 64, hpx: kind === 'tee' ? 32 : 30 };
   sp.renderOrder = 11;
   return sp;
 }

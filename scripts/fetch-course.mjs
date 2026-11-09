@@ -378,27 +378,56 @@ async function main() {
   // Terrain from USGS 3DEP
   const cols = Math.round((bounds.maxX - bounds.minX) / CELL) + 1;
   const rows = Math.round((bounds.maxY - bounds.minY) / CELL) + 1;
-  const lonMin = origin.lon + bounds.minX / kx, lonMax = origin.lon + (bounds.minX + (cols - 1) * CELL) / kx;
-  const latMin = origin.lat + bounds.minY / ky, latMax = origin.lat + (bounds.minY + (rows - 1) * CELL) / ky;
-  // exportImage treats bbox as pixel edges; widen by half a cell so samples land on grid points.
-  const hx = CELL / 2 / kx, hy = CELL / 2 / ky;
-  console.log(`Downloading elevation grid ${cols}×${rows} at ${CELL} m…`);
-  const elevUrl = 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?' + new URLSearchParams({
-    bbox: [lonMin - hx, latMin - hy, lonMax + hx, latMax + hy].join(','), bboxSR: '4326', imageSR: '4326',
-    size: `${cols},${rows}`, format: 'tiff', pixelType: 'F32', noDataInterpretation: 'esriNoDataMatchAny',
-    interpolation: 'RSP_BilinearInterpolation', f: 'image',
-  });
-  const tif = readTiffF32(await get(elevUrl, 'buf'));
-  if (tif.width !== cols || tif.height !== rows) throw new Error(`terrain size mismatch ${tif.width}x${tif.height}`);
-  // TIFF rows go north→south; store south→north so row index grows with y.
-  let minH = Infinity, maxH = -Infinity;
-  for (const v of tif.data) if (v > -1000) { minH = Math.min(minH, v); maxH = Math.max(maxH, v); }
-  const grid = new Uint16Array(cols * rows);
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    let v = tif.data[(rows - 1 - r) * cols + c];
-    if (!(v > -1000)) v = minH;
-    grid[r * cols + c] = Math.round((v - minH) * 100);
+  // Download in small tiles: for large areas the elevation service quietly returns a
+  // smoothed, lower-detail surface (it was ~0.75 m off near greens); small tiles come
+  // back at full 3DEP lidar detail (~0.15 m from USGS point values).
+  const TILE_PX = 48;
+  const data = new Float32Array(cols * rows).fill(NaN); // row 0 = south
+  const { fromArrayBuffer } = await import('geotiff');
+  const tilesX = Math.ceil(cols / TILE_PX), tilesY = Math.ceil(rows / TILE_PX);
+  console.log(`Downloading elevation grid ${cols}×${rows} at ${CELL} m in ${tilesX * tilesY} tiles…`);
+  for (let ty = 0; ty < tilesY; ty++) for (let tx = 0; tx < tilesX; tx++) {
+    const c0 = tx * TILE_PX, r0 = ty * TILE_PX;
+    const c1 = Math.min(cols - 1, c0 + TILE_PX - 1), r1 = Math.min(rows - 1, r0 + TILE_PX - 1);
+    const w = c1 - c0 + 1, h = r1 - r0 + 1;
+    // Ask for a little more than the tile (the service may nudge the edges), then sample
+    // each grid point from where the returned image says its pixels really are.
+    const PAD = 4;
+    const x0 = bounds.minX + (c0 - PAD) * CELL, x1 = bounds.minX + (c1 + PAD) * CELL, y0 = bounds.minY + (r0 - PAD) * CELL, y1 = bounds.minY + (r1 + PAD) * CELL;
+    const pw = w + 2 * PAD, ph = h + 2 * PAD;
+    const url = 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?' + new URLSearchParams({
+      bbox: [origin.lon + x0 / kx, origin.lat + y0 / ky, origin.lon + x1 / kx, origin.lat + y1 / ky].join(','), bboxSR: '4326', imageSR: '4326',
+      size: `${pw},${ph}`, format: 'tiff', pixelType: 'F32', noDataInterpretation: 'esriNoDataMatchAny',
+      interpolation: 'RSP_BilinearInterpolation', f: 'image',
+    });
+    let sample = null;
+    for (let attempt = 0; attempt < 5 && !sample; attempt++) {
+      try {
+        const buf = await get(url, 'buf');
+        const img = await (await fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))).getImage();
+        const [ras] = await img.readRasters();
+        const [bx0, , , by1] = img.getBoundingBox();
+        const [rx, ry] = img.getResolution();
+        const iw = img.getWidth(), ih = img.getHeight();
+        sample = (lon, lat) => {
+          const fx = (lon - bx0) / rx - 0.5, fy = (lat - by1) / ry - 0.5; // pixel centers
+          const cx = Math.max(0, Math.min(iw - 2, Math.floor(fx))), cy = Math.max(0, Math.min(ih - 2, Math.floor(fy)));
+          const ax = Math.min(1, Math.max(0, fx - cx)), ay = Math.min(1, Math.max(0, fy - cy));
+          const v = (i, j) => ras[j * iw + i];
+          return (v(cx, cy) * (1 - ax) + v(cx + 1, cy) * ax) * (1 - ay) + (v(cx, cy + 1) * (1 - ax) + v(cx + 1, cy + 1) * ax) * ay;
+        };
+      } catch (e) { console.warn(`  tile ${tx},${ty} retry (${e.message})`); await sleep(2000 * (attempt + 1)); }
+    }
+    if (!sample) throw new Error(`elevation tile ${tx},${ty} failed`);
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+      const x = bounds.minX + c * CELL, y = bounds.minY + r * CELL;
+      data[r * cols + c] = sample(origin.lon + x / kx, origin.lat + y / ky);
+    }
   }
+  let minH = Infinity, maxH = -Infinity;
+  for (const v of data) if (v > -1000) { minH = Math.min(minH, v); maxH = Math.max(maxH, v); }
+  const grid = new Uint16Array(cols * rows);
+  for (let i = 0; i < data.length; i++) grid[i] = Math.round(((data[i] > -1000 ? data[i] : minH) - minH) * 100);
   console.log(`Elevation ${minH.toFixed(1)}–${maxH.toFixed(1)} m`);
 
   // Tree canopy height (Meta & WRI 1 m global canopy height map, derived from satellite imagery)

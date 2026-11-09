@@ -100,7 +100,7 @@ function renderTop() {
     <button class="navbtn" data-act="menu" aria-label="Menu">☰</button>`;
   $('#tabs').innerHTML = (['plan', 'play', 'stats'] as Tab[]).map((k) => `<button data-tab="${k}" class="${app.tab === k ? 'on' : ''}">${{ plan: 'Plan', play: round() ? 'Play ●' : 'Play', stats: 'Stats' }[k]}</button>`).join('');
   const cur = app.scene?.currentView;
-  $('#viewbtns').innerHTML = `<button class="compass" data-act="northup" aria-label="Compass: tap for the course map, north up"><i id="needle">▲</i><small>N</small></button>` +
+  $('#viewbtns').innerHTML = (app.scene?.userMoved ? `<button class="reset" data-act="resetview">⟲ Reset</button>` : '') + `<button class="compass" data-act="northup" aria-label="Compass: tap for the course map, north up"><i id="needle">▲</i><small>N</small></button>` +
     (['top', 'tee', 'green', 'course'] as ViewName[]).map((v) => `<button data-view="${v}" class="${cur === v ? 'on' : ''}">${{ top: 'Hole', tee: '3D', green: 'Green', course: 'Course' }[v]}</button>`).join('') +
     `<button data-act="wind" class="${S().settings.showWind ? 'on' : ''}" aria-pressed="${S().settings.showWind}">Wind</button>` +
     (myPos() ? '<button data-act="viewme">Me</button>' : '');
@@ -178,6 +178,15 @@ function renderModebar() {
   bar.className = 'modebar';
   bar.innerHTML = `${text}<button data-act="cancelmode">Cancel</button>`;
   $('#app').appendChild(bar);
+}
+
+/** Elevation in plain words, with what it does to the yardage. */
+function elevText(from: XY, to: XY, who: 'you' | 'the tee' = 'you') {
+  const rise = app.course.height(to[0], to[1]) - app.course.height(from[0], from[1]);
+  const ft = Math.round(rise * 3.28);
+  const yds = Math.round(Math.abs(rise) * 1.094); // roughly a yard of distance per yard of height
+  if (Math.abs(ft) < 6) return `Green is about level with ${who}`;
+  return `Green is <b>${Math.abs(ft)} ft ${ft > 0 ? 'above' : 'below'}</b> ${who}: plays about <b>${yds} yds ${ft > 0 ? 'longer' : 'shorter'}</b>`;
 }
 
 let lastNeedle = 0;
@@ -273,9 +282,10 @@ function renderPlan(): string {
     <div class="row wrap small" style="margin-top:8px">
       <span class="chip" data-act="editwx">💨 ${c.windMph < 1 ? 'Calm' : `${Math.round(c.windMph)} mph ${compass(c.windFrom)} · ${windText(t.center, pinXY)}`}</span>
       <span class="chip">🌡 ${Math.round(c.tempF)}°F</span>
-      <span class="chip">${p.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(p.riseFt)} ft</span>
       <button class="btn sm" data-act="wx">${c.fetchedAt ? 'Update' : 'Get'} weather</button>
     </div>
+
+    <div class="elev">${elevText(t.center, pinXY, 'the tee')}</div>
 
     <h3>Your plan</h3>
     ${steps.length ? `<ul class="list">${stepRows}</ul>` : '<p class="muted small">No plan yet. Let the app suggest one, or add shots and tap the map to place each target.</p>'}
@@ -332,13 +342,13 @@ function lieHtml(from: XY, toward: XY) {
   const { along, across } = app.course.lieSlope(from, bearing(from, toward));
   const above = S().settings.leftHanded ? -across : across;
   const parts: string[] = [], tips: string[] = [];
-  if (along >= 2) { parts.push(`${Math.round(along)}° uphill`); tips.push('flies higher and shorter: take more club'); }
-  else if (along <= -2) { parts.push(`${Math.round(-along)}° downhill`); tips.push('flies lower and runs: take less club'); }
+  if (along >= 2) { parts.push(`uphill slope (${Math.round(along)}°)`); tips.push('ball flies higher and shorter, so take more club'); }
+  else if (along <= -2) { parts.push(`downhill slope (${Math.round(-along)}°)`); tips.push('ball flies lower and runs, so take less club'); }
   const side = S().settings.leftHanded ? ['right', 'left'] : ['left', 'right'];
-  if (above >= 2) { parts.push(`ball ${Math.round(above)}° above feet`); tips.push(`tends to go ${side[0]}: aim a little ${side[1]}`); }
-  else if (above <= -2) { parts.push(`ball ${Math.round(-above)}° below feet`); tips.push(`tends to go ${side[1]}: aim a little ${side[0]}`); }
-  if (!parts.length) return '<div class="lie-row"><span class="chip">Lie: flat</span></div>';
-  return `<div class="lie-row"><span class="chip">Lie: ${parts.join(' · ')}</span><span class="tiny muted">${tips.join('; ')}</span></div>`;
+  if (above >= 2) { parts.push('ball above your feet'); tips.push(`it tends to go ${side[0]}, so aim a little ${side[1]}`); }
+  else if (above <= -2) { parts.push('ball below your feet'); tips.push(`it tends to go ${side[1]}, so aim a little ${side[0]}`); }
+  if (!parts.length) return '<div class="elev">Your ball is on <b>flat ground</b></div>';
+  return `<div class="elev">Your ball is on a <b>${parts.join(', ')}</b>: ${tips.join('; ')}.</div>`;
 }
 
 /** Bunkers and water between you and the green: yards to reach and to carry. */
@@ -406,7 +416,8 @@ function renderPlay(): string {
   if (rec.quick) {
     const strokes = rec.strokes ?? h.par;
     return `${distances}
-      <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="chip">${pl.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(pl.riseFt)} ft</span><button class="btn sm" data-act="playopts">What should I hit?</button></div>
+      <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><button class="btn sm" data-act="playopts">What should I hit?</button></div>
+      <div class="elev">${elevText(from, rec.pin)}</div>
       ${carriesHtml(from, rec.pin)}
       ${me ? lieHtml(me, rec.pin) : ''}
       ${app.options ? renderOptions() : ''}
@@ -428,7 +439,8 @@ function renderPlay(): string {
     <div class="grow"><b>${s.club}</b> <span class="small muted">${Math.round(s.yds)} yds${s.endEstimated ? '?' : ''} · <span class="lie">${s.startLie}</span> → <span class="lie">${s.endLie}</span></span>${s.penalty ? ` <span class="chip loss">+${s.penalty} pen</span>` : ''}</div>
     <button class="btn sm" data-act="pen" data-i="${i}" aria-label="Add a penalty stroke">+Pen</button><button class="btn sm" data-act="delshot" data-i="${i}" aria-label="Delete shot">✕</button></li>`).join('');
   return `${distances}
-    <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="chip">${pl.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(pl.riseFt)} ft</span>
+    <div class="elev">${elevText(from, rec.pin)}</div>
+    <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span>
       ${planned ? `<span class="chip">Plan: ${planned.club} → ${y0(dist(from, planned.target))}</span>` : ''}
       <button class="btn sm" data-act="playopts">What should I hit?</button></div>
     ${carriesHtml(from, rec.pin)}
@@ -578,9 +590,14 @@ function clubsTable() {
 }
 
 // ---------------- panel ----------------
+let lastScreen = '';
 function renderPanel() {
   const panel = $('#panel');
-  const scroll = panel.scrollTop;
+  // Keep the scroll position while working on one screen; start at the top of a new one.
+  const rec = holeRec();
+  const screen = `${app.tab}|${app.ref}|${round()?.id ?? ''}|${rec?.done ?? ''}|${rec?.quick ?? ''}`;
+  const scroll = screen === lastScreen ? panel.scrollTop : 0;
+  lastScreen = screen;
   panel.innerHTML = app.tab === 'plan' ? renderPlan() : app.tab === 'play' ? renderPlay() : renderStats();
   panel.scrollTop = scroll;
 }
@@ -596,11 +613,24 @@ function refresh(opts: { camera?: boolean } = {}) {
   redraw();
 }
 
+/** Big "Hole 7 · Par 5" card for a moment whenever the hole changes. */
+function holeCard() {
+  document.querySelector('.holecard')?.remove();
+  const h = hole(), t = tee();
+  const el = document.createElement('div');
+  el.className = 'holecard';
+  el.innerHTML = `<b>Hole ${h.ref}</b><span>Par ${h.par} · ${t.lengthYds} yds${h.handicap ? ` · Hcp ${h.handicap}` : ''}</span>`;
+  $('#view').appendChild(el);
+  setTimeout(() => el.classList.add('out'), 1300);
+  setTimeout(() => el.remove(), 1800);
+}
+
 function goHole(ref: number) {
   app.ref = ((ref - 1 + 18) % 18) + 1;
   app.options = null; app.measure = null; app.mode = null;
   $('#panel').scrollTop = 0;
   refresh({ camera: true });
+  holeCard();
 }
 
 // ---------------- modal ----------------
@@ -854,6 +884,7 @@ function onClick(e: Event) {
   if (!el || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT')) return;
   if (el.dataset.tab) {
     app.tab = el.dataset.tab as Tab; app.options = null; app.measure = null; app.mode = null;
+    $('#panel').scrollTop = 0;
     if (app.tab === 'play' && round()) startGps();
     $('#sheet').classList.remove('min');
     refresh(); return;
@@ -874,6 +905,7 @@ function onClick(e: Event) {
     case 'next': goHole(app.ref + 1); break;
     case 'menu': menu(); break;
     case 'northup': app.scene.view('course'); renderTop(); break;
+    case 'resetview': app.scene.view(app.scene.currentView); renderTop(); break;
     case 'wind': {
       S().settings.showWind = !S().settings.showWind;
       save();
@@ -1025,6 +1057,7 @@ async function boot() {
   app.scene = new HoleScene($('#view'), app.course);
   app.scene.onTap = onTap;
   app.scene.onCompass = setNeedle;
+  app.scene.onUserMove = () => renderTop();
   app.scene.setExaggeration(S().settings.exaggerate);
   const hash = +location.hash.replace('#', '');
   if (hash >= 1 && hash <= 18) app.ref = hash;

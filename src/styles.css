@@ -156,3 +156,11 @@ table.card-t td:first-child, table.card-t th:first-child { text-align: left; pad
 .statgrid span { font-size: 11px; color: var(--muted); }
 #toast.warn { background: #8a2b1a; }
 .lie-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 2px 0 6px; }
+
+.elev { font-size: 13.5px; line-height: 1.35; margin: 4px 0 6px; padding: 7px 10px; border-radius: 10px; background: var(--chip); }
+.holecard { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); z-index: 3; background: #102018e6; color: #fff; padding: 14px 24px; border-radius: 16px; text-align: center; pointer-events: none; transition: opacity 0.4s; }
+.holecard b { display: block; font-size: 30px; line-height: 1.1; }
+.holecard span { font-size: 14px; opacity: 0.9; white-space: nowrap; }
+.holecard.out { opacity: 0; }
+#viewbtns .reset { background: #ffb300; color: #1c1600; }
+@media (prefers-reduced-motion: reduce) { .holecard { transition: none; } }
