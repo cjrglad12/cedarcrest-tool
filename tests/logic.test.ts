@@ -349,3 +349,19 @@ describe('putting physics', () => {
     expect(Date.now() - t0).toBeLessThan(3000);
   });
 });
+
+describe('live weather outlook', () => {
+  it('calls out rain, rising wind and a temperature swing', async () => {
+    const { outlookNotes } = await import('../src/conditions');
+    const now = { windMph: 6, gustMph: 10, windFrom: 180, tempF: 70, fetchedAt: 'x', outlook: [
+      { time: '2026-11-09T14:00', tempF: 72, windMph: 8, gustMph: 12, windFrom: 185, rainPct: 10 },
+      { time: '2026-11-09T15:00', tempF: 75, windMph: 15, gustMph: 22, windFrom: 190, rainPct: 55 },
+      { time: '2026-11-09T16:00', tempF: 77, windMph: 12, gustMph: 20, windFrom: 200, rainPct: 30 },
+      { time: '2026-11-09T17:00', tempF: 80, windMph: 10, gustMph: 15, windFrom: 200, rainPct: 10 },
+    ] };
+    const notes = outlookNotes(now);
+    expect(notes[0]).toBe('Rain likely around 3 PM (55%)');
+    expect(notes).toContain('Wind picking up to 15 mph by 3 PM');
+    expect(notes).toContain('Warming to 80°F by 5 PM');
+  });
+});

@@ -84,6 +84,7 @@ export interface Settings {
   leftHanded: boolean;
   stimp: number; // green speed (feet on the Stimpmeter)
   wet: 'auto' | 'wet' | 'dry';
+  manualWeather: boolean; // true = you entered conditions; live updates paused
 }
 
 export interface State {
@@ -102,7 +103,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto' },
+    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},

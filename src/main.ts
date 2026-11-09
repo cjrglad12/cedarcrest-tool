@@ -4,7 +4,7 @@ import { findLine, roll, speedFor, rise, describeAim, M_TO_FT, PuttGreen, PuttRe
 import { tipsFor, isWet, Tip } from './tips';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
-import { Conditions, fetchConditions, windComponents, playsLike, compass } from './conditions';
+import { Conditions, fetchConditions, windComponents, playsLike, compass, outlookNotes } from './conditions';
 import { suggest, buildPlan, evaluate, Option, Ctx } from './advice';
 import { analyzeRound, analyzeHole, clubStats, effectiveBag, holeHistory, ClubStat, scoringStats, differential, courseHandicap, adjustedGross } from './stats';
 import { CATEGORY_LABEL, Category } from './sg';
@@ -199,6 +199,12 @@ function elevText(from: XY, to: XY, who: 'you' | 'the tee' = 'you') {
 
 const wetNow = () => isWet(cond(), S().settings.wet);
 
+function outlookHtml() {
+  if (S().settings.manualWeather) return '';
+  const notes = outlookNotes(cond());
+  return notes.length ? `<div class="outlook">${notes.map((n) => `<span>⏱ ${n}</span>`).join('')}</div>` : '';
+}
+
 function tipsHtml(tips: Tip[]) {
   if (!tips.length) return '';
   return `<ul class="tips">${tips.map((t) => `<li><span aria-hidden="true">${t.icon}</span><span>${t.text}</span></li>`).join('')}</ul>`;
@@ -298,8 +304,9 @@ function renderPlan(): string {
       <span class="chip" data-act="editwx">💨 ${c.windMph < 1 ? 'Calm' : `${Math.round(c.windMph)} mph ${compass(c.windFrom)} · ${windText(t.center, pinXY)}`}</span>
       <span class="chip">🌡 ${Math.round(c.tempF)}°F</span>
       <button class="chip" data-act="wet" aria-label="Course wetness: tap to change">💧 ${{ auto: wetNow() ? 'Wet (rain)' : 'Dry', wet: 'Wet', dry: 'Dry' }[S().settings.wet]}${S().settings.wet === 'auto' ? '' : ' (set)'}</button>
-      <button class="btn sm" data-act="wx">${c.fetchedAt ? 'Update' : 'Get'} weather</button>
+      ${S().settings.manualWeather ? '<button class="btn sm" data-act="wxlive">Use live weather</button>' : `<button class="chip" data-act="wx" aria-label="Refresh weather"><span data-age>${weatherLabel()}</span> ↻</button>`}
     </div>
+    ${outlookHtml()}
 
     <div class="elev">${elevText(t.center, pinXY, 'the tee')}</div>
     ${tipsHtml(tipsFor({ cond: c, wetSetting: S().settings.wet, where: 'plan', shotYds: toYds(dist(t.center, pinXY)) > 260 ? 230 : toYds(dist(t.center, pinXY)), shotBearing: bearing(t.center, pinXY) }))}
@@ -436,7 +443,8 @@ function renderPlay(): string {
   if (rec.quick) {
     const strokes = rec.strokes ?? h.par;
     return `${distances}
-      <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><button class="btn sm" data-act="playopts">What should I hit?</button></div>
+      <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="tiny muted" data-age>${weatherLabel()}</span><button class="btn sm" data-act="playopts">What should I hit?</button></div>
+      ${outlookHtml()}
       <div class="elev">${elevText(from, rec.pin)}</div>
       ${carriesHtml(from, rec.pin)}
       ${me ? lieHtml(me, rec.pin) : ''}
@@ -461,10 +469,11 @@ function renderPlay(): string {
     <button class="btn sm" data-act="pen" data-i="${i}" aria-label="Add a penalty stroke">+Pen</button><button class="btn sm" data-act="delshot" data-i="${i}" aria-label="Delete shot">✕</button></li>`).join('');
   return `${distances}
     <div class="elev">${elevText(from, rec.pin)}</div>
-    <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span>
+    <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="tiny muted" data-age>${weatherLabel()}</span>
       ${planned ? `<span class="chip">Plan: ${planned.club} → ${y0(dist(from, planned.target))}</span>` : ''}
       <button class="btn sm" data-act="playopts">What should I hit?</button></div>
     ${carriesHtml(from, rec.pin)}
+    ${outlookHtml()}
     ${me ? lieHtml(me, rec.pin) : ''}
     ${tipsHtml(tipsFor({ cond: cond(), wetSetting: S().settings.wet, where: 'shot', shotYds: toYds(dist(from, rec.pin)), shotBearing: bearing(from, rec.pin) }).slice(0, 2))}
     ${rec.greenMark ? '<button class="btn primary wide" data-act="readputt" style="margin:6px 0">⛳ Read this putt</button>' : ''}
@@ -819,20 +828,51 @@ function finishHoleDialog() {
 }
 
 // ---------------- actions ----------------
-async function getWeather(quiet = false) {
+let weatherBusy = false;
+/** Fetch live weather. Every round and every number in the app uses the latest reading. */
+async function getWeather(quiet = false, force = false) {
+  if (weatherBusy || (S().settings.manualWeather && !force)) return;
+  weatherBusy = true;
   try {
     const { lat, lon } = app.course.data.origin;
     const c = await fetchConditions(lat, lon);
+    const before = S().conditions;
     S().conditions = c;
+    S().settings.manualWeather = false;
     const r = round();
     if (r) r.conditions = c;
     save();
     if (!quiet) toast(`Wind ${Math.round(c.windMph)} mph from ${compass(c.windFrom)}, ${Math.round(c.tempF)}°F`);
+    // Only re-plan advice if the weather changed enough to matter.
+    const changed = Math.abs(before.windMph - c.windMph) >= 3 || Math.abs(before.tempF - c.tempF) >= 5 || Math.abs(((before.windFrom - c.windFrom + 540) % 360) - 180) >= 30;
+    if (changed && app.options) app.options = null;
   } catch (e) {
     if (!quiet) toast('Could not get weather. Tap the wind chip to enter it.');
+  } finally {
+    weatherBusy = false;
   }
-  app.options = null;
   renderPanel(); redraw();
+}
+
+const WEATHER_EVERY = 10 * 60 * 1000;
+function weatherAge() {
+  const c = S().conditions;
+  return c.fetchedAt ? Date.now() - Date.parse(c.fetchedAt) : Infinity;
+}
+/** Keep the weather live: refresh every 10 minutes while the app is open, and when you come back to it. */
+function startLiveWeather() {
+  setInterval(() => { if (!document.hidden && weatherAge() > WEATHER_EVERY - 30000) void getWeather(true); }, 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && weatherAge() > WEATHER_EVERY) void getWeather(true); });
+  setInterval(() => { if (!document.hidden && document.querySelector('[data-age]')) refreshAgeLabels(); }, 30 * 1000);
+}
+function refreshAgeLabels() {
+  document.querySelectorAll<HTMLElement>('[data-age]').forEach((el) => { el.textContent = weatherLabel(); });
+}
+function weatherLabel() {
+  const c = S().conditions;
+  if (S().settings.manualWeather || !c.fetchedAt) return 'entered by hand';
+  const min = Math.floor(weatherAge() / 60000);
+  return min < 1 ? 'live · just now' : `live · ${min} min ago`;
 }
 
 function editWeather() {
@@ -841,11 +881,13 @@ function editWeather() {
     <div class="row spread"><span>Wind (mph)</span><input type="number" id="wmph" value="${Math.round(c.windMph)}"/></div>
     <div class="row spread" style="margin-top:8px"><span>Wind from</span><select class="clubsel" id="wfrom">${['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].map((d, i) => `<option value="${i * 45}" ${compass(c.windFrom) === d ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
     <div class="row spread" style="margin-top:8px"><span>Temperature (°F)</span><input type="number" id="wtemp" value="${Math.round(c.tempF)}"/></div>
+    <p class="tiny muted">Saving pauses live weather updates until you tap "Use live weather".</p>
     <div class="row" style="margin-top:12px"><button class="btn grow" data-act="closemodal">Cancel</button><button class="btn primary grow" id="wsave">Save</button></div>`);
   $('#modal').onclick = null;
   $('#wsave').onclick = () => {
     const n: Conditions = { windMph: +($('#wmph') as HTMLInputElement).value || 0, gustMph: 0, windFrom: +($('#wfrom') as HTMLSelectElement).value, tempF: +($('#wtemp') as HTMLInputElement).value || 75, fetchedAt: null };
     S().conditions = n;
+    S().settings.manualWeather = true;
     const r = round(); if (r) r.conditions = n;
     save(); closeModal(); app.options = null; renderPanel(); redraw();
   };
@@ -857,7 +899,7 @@ function startRound() {
   S().activeRoundId = r.id;
   saveNow(S());
   startGps();
-  getWeather();
+  if (weatherAge() > 2 * 60 * 1000) void getWeather();
   refresh();
 }
 
@@ -1039,7 +1081,8 @@ function onClick(e: Event) {
     case 'closemodal': closeModal(); break;
     case 'cancelmode': app.mode = null; renderModebar(); break;
     case 'viewme': { const me = myPos(); if (me) app.scene.focus(me); break; }
-    case 'wx': getWeather(); break;
+    case 'wx': getWeather(false, true); break;
+    case 'wxlive': getWeather(false, true); break;
     case 'editwx': editWeather(); break;
     case 'aim': app.mode = { kind: 'aim', step: i }; renderModebar(); break;
     case 'delstep': pl.steps.splice(i, 1); setPlan(pl); refresh(); break;
@@ -1200,8 +1243,8 @@ async function boot() {
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(S()); });
   if (round()) { app.tab = 'play'; startGps(); }
   refresh({ camera: true });
-  const c = S().conditions;
-  if (!c.fetchedAt || Date.now() - Date.parse(c.fetchedAt) > 45 * 60 * 1000) void getWeather(true);
+  if (weatherAge() > WEATHER_EVERY) void getWeather(true);
+  startLiveWeather();
   if (!S().settings.onboarded) welcome();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
