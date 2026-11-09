@@ -2,7 +2,7 @@ import './styles.css';
 import { bestFix, fmtHcp, parseHcp } from './gps';
 import { findLine, roll, speedFor, rise, describeAim, learnStimp, M_TO_FT, PuttGreen, PuttResult, PuttRead } from './putt';
 import { tipsFor, isWet, Tip } from './tips';
-import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature } from './course';
+import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature, fromBearing, ringCentroid } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
 import { Conditions, fetchConditions, windComponents, playsLike, compass, outlookNotes } from './conditions';
 import { suggest, buildPlan, evaluate, Option, Ctx } from './advice';
@@ -331,7 +331,7 @@ function renderPlan(): string {
     <button class="btn" data-act="readputt">⛳ Read a putt on this green</button>
 
     <h3>Pin &amp; notes</h3>
-    <div class="row wrap"><button class="btn sm" data-act="setpin">Move pin</button>${S().pins[app.ref] ? '<button class="btn sm" data-act="resetpin">Reset pin</button>' : '<span class="small muted">Using the mapped pin</span>'}</div>
+    <div class="row wrap"><button class="btn sm" data-act="pinsheet">Pin sheet</button><button class="btn sm" data-act="setpin">Tap to move pin</button>${S().pins[app.ref] ? '<button class="btn sm" data-act="resetpin">Reset pin</button>' : '<span class="small muted">Using the mapped pin</span>'}</div>
     <textarea data-act="notes" placeholder="Notes for this hole (miss short, favor left side…)">${esc(plan().notes)}</textarea>
     <p class="tiny muted">Tap anywhere on the hole to measure. Distances are in yards. "Plays" adjusts for elevation, wind and temperature.</p>`;
 }
@@ -386,6 +386,26 @@ function carriesHtml(from: XY, pinXY: XY) {
   return `<div class="carries">${hz.map((z) => `<span>${z.kind === 'water' ? '💧' : '⛱'} ${z.side === 'center' ? '' : z.side === 'left' ? 'L ' : 'R '}<b>${y0(z.reach)}</b>/<b>${y0(z.carry)}</b></span>`).join('')}<span class="muted">reach/carry</span></div>`;
 }
 
+/**
+ * The club for a plays-like distance, from your bag (your measured distances once you have
+ * them). Picks the club whose typical distance is nearest, preferring one that gets there.
+ */
+function clubFor(playsYds: number): Club | null {
+  const clubs = app.bag.filter((c) => c.on).sort((a, b) => a.yds - b.yds);
+  if (!clubs.length || playsYds > clubs[clubs.length - 1].yds + 40) return null;
+  return clubs.find((c) => c.yds >= playsYds - 4) ?? clubs[clubs.length - 1];
+}
+
+function clubRecHtml(playsPin: number, gd: { front: number; back: number; pin: number }) {
+  if (playsPin < 30) return '';
+  const club = clubFor(playsPin);
+  if (!club) return '';
+  const factor = playsPin / Math.max(1, toYds(gd.pin));
+  const front = clubFor(toYds(gd.front) * factor), back = clubFor(toYds(gd.back) * factor);
+  const range = front && back && front.name !== back.name ? ` <span class="muted">· front ${front.name}, back ${back.name}</span>` : '';
+  return `<div class="clubrec">🏌 <b>${club.name}</b> to the pin (plays ${playsPin}, your ${club.name} goes ${club.yds})${range}</div>`;
+}
+
 function newHoleRec(r: Round): HoleRec {
   const quick = r.trackShots === false;
   return { ref: app.ref, teeId: tee().id, pin: S().pins[app.ref] ?? hole().pin, shots: [], greenMark: null, putts: quick ? 2 : 0, holedFromOff: false, followedPlan: null, done: false, quick, strokes: quick ? hole().par : undefined, fairway: null };
@@ -430,6 +450,7 @@ function renderPlay(): string {
       <div class="mid"><b>${y0(gd.pin)}</b><span>${pl.plays !== y0(gd.pin) ? `Plays ${pl.plays}` : 'Pin'}</span></div>
       <div><b>${y0(gd.back)}</b><span>Back</span></div>
     </div>
+    ${clubRecHtml(pl.plays, gd)}
     ${gpsLine || (app.gps ? `<div class="tiny muted" style="text-align:center;margin-top:2px">GPS ±${Math.max(1, Math.round(app.gps.acc * 1.09))} yds</div>` : '')}`;
 
   if (rec.done) {
@@ -459,7 +480,7 @@ function renderPlay(): string {
       ${strokes - rec.putts > h.par - 2 ? `<div class="small muted" style="margin-top:10px">Missed the green</div><div class="seg">${(['short', 'long', 'left', 'right'] as const).map((v) => `<button class="${rec!.missedGreen === v ? 'on' : ''}" data-act="mg" data-v="${v}">${{ short: 'Short', long: 'Long', left: 'Left', right: 'Right' }[v]}</button>`).join('')}</div>` : '<div class="small gain" style="margin-top:10px">Green in regulation</div>'}
       <div class="row spread" style="margin-top:10px"><span class="small muted">Penalty strokes (included in score)</span><div class="stepper"><button data-act="pens" data-d="-1" aria-label="One less penalty">−</button><b>${rec.penalties ?? 0}</b><button data-act="pens" data-d="1" aria-label="One more penalty">+</button></div></div>
       <button class="btn primary wide" style="margin-top:12px" data-act="savehole">Save hole ${h.ref} ›</button>
-      <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="trackmode">Track shots on this hole</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="roundpin">Set today's pin</button></div>
+      <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="trackmode">Track shots on this hole</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="pinsheet">Today's pin</button></div>
       ${roundFooter()}`;
   }
 
@@ -488,7 +509,7 @@ function renderPlay(): string {
       <div><div class="small muted">Putts</div><div class="stepper"><button data-act="putt" data-d="-1" aria-label="One less putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="One more putt">+</button></div></div>
       <button class="btn primary" data-act="finish" ${rec.shots.length ? '' : 'disabled'}>Finish hole</button>
     </div>
-    <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="quick">Just enter my score</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="roundpin">Set today's pin</button><button class="btn sm" data-act="simnow">Place ball by hand</button></div>
+    <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="quick">Just enter my score</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="pinsheet">Today's pin</button><button class="btn sm" data-act="simnow">Place ball by hand</button></div>
     ${roundFooter()}`;
 }
 
@@ -501,6 +522,61 @@ function ratingFor(set: TeeSet) {
 }
 
 const teeName = (set: TeeSet) => app.course.data.tees?.[set]?.name ?? set[0].toUpperCase() + set.slice(1);
+
+/**
+ * Set the pin the way pin sheets give it: paces on from the front edge, and paces
+ * from the left or right edge (a pace is about a yard).
+ */
+function pinSheet() {
+  const h = hole(), g = app.course.greenOf(h);
+  if (!g) { toast('No green outline for this hole'); return; }
+  let on = 15, side: 'left' | 'right' = 'left', from = 6;
+  const center = ringCentroid(g.rings[0]);
+  // Line of approach: from the middle of the fairway side (tee) toward the green's center.
+  const approach = bearing(tee().center, center);
+  const inG = (p: XY) => pointInFeature(p, g);
+  const solve = (): XY | null => {
+    // Front edge along the line of approach through the center.
+    let front: XY | null = null;
+    for (let m = -60; m <= 60; m += 0.25) { const p = fromBearing(center, approach, m); if (inG(p)) { front = p; break; } }
+    if (!front) return null;
+    const depthPt = fromBearing(front, approach, on * 0.9144);
+    // Walk across the green at that depth to find the left and right edges.
+    let left: XY | null = null, right: XY | null = null;
+    for (let m = 0; m <= 60; m += 0.25) { const p = fromBearing(depthPt, approach - 90, m); if (inG(p)) left = p; else if (left) break; }
+    for (let m = 0; m <= 60; m += 0.25) { const p = fromBearing(depthPt, approach + 90, m); if (inG(p)) right = p; else if (right) break; }
+    if (!left || !right) return inG(depthPt) ? depthPt : null;
+    const edge = side === 'left' ? left : right;
+    return fromBearing(edge, side === 'left' ? approach + 90 : approach - 90, from * 0.9144);
+  };
+  const draw = () => {
+    const p = solve();
+    modal(`<h2>Today's pin · Hole ${h.ref}</h2>
+      <p class="small muted">From the pin sheet. A pace is about a yard.</p>
+      <div class="row spread"><span>Paces on (from front edge)</span><div class="stepper"><button data-ps="on" data-d="-1" aria-label="Fewer paces on">−</button><b>${on}</b><button data-ps="on" data-d="1" aria-label="More paces on">+</button></div></div>
+      <div class="row spread" style="margin-top:10px"><span>Paces from the</span><div class="seg" style="width:150px"><button class="${side === 'left' ? 'on' : ''}" data-ps="side" data-v="left">Left</button><button class="${side === 'right' ? 'on' : ''}" data-ps="side" data-v="right">Right</button></div></div>
+      <div class="row spread" style="margin-top:10px"><span>Paces from the ${side} edge</span><div class="stepper"><button data-ps="from" data-d="-1" aria-label="Fewer paces">−</button><b>${from}</b><button data-ps="from" data-d="1" aria-label="More paces">+</button></div></div>
+      <p class="small ${p && inG(p) ? 'muted' : 'loss'}">${p && inG(p) ? `That puts the pin ${Math.round(toYds(dist(tee().center, p)))} yds from the tee.` : "That's off the green. Check the numbers."}</p>
+      <div class="row"><button class="btn grow" data-act="closemodal">Cancel</button><button class="btn primary grow" data-ps="save" ${p && inG(p) ? '' : 'disabled'}>Set pin</button></div>`);
+    $('#modal').onclick = (e) => {
+      const b = (e.target as HTMLElement).closest('[data-ps]') as HTMLElement | null;
+      if (!b) return;
+      const k = b.dataset.ps;
+      if (k === 'on') on = Math.max(1, Math.min(60, on + +b.dataset.d!));
+      if (k === 'from') from = Math.max(1, Math.min(40, from + +b.dataset.d!));
+      if (k === 'side') side = b.dataset.v as 'left' | 'right';
+      if (k === 'save') {
+        const pt = solve();
+        if (!pt) return;
+        if (app.tab === 'play' && holeRec()) holeRec()!.pin = pt; else S().pins[app.ref] = pt;
+        save(); closeModal(); app.options = null; refresh(); toast(`Pin set: ${on} on, ${from} from the ${side}`);
+        return;
+      }
+      draw();
+    };
+  };
+  draw();
+}
 
 function copyForGhin(roundId?: string) {
   const r = (roundId ? S().rounds.find((x) => x.id === roundId) : round()) ?? null;
@@ -557,8 +633,15 @@ function roundFooter() {
 }
 
 // ---------------- Stats tab ----------------
+/** Handicap level strokes gained compares against: yours, a scratch golfer, or the PGA Tour (the baseline itself). */
+function baselineHcp() {
+  const b = S().settings.sgBaseline;
+  return b === 'tour' ? 0 : b === 'scratch' ? 4 : S().settings.handicap;
+}
+const baselineName = () => ({ me: `a typical ${fmtHcp(S().settings.handicap)} handicap`, scratch: 'a scratch golfer', tour: 'a PGA Tour player' }[S().settings.sgBaseline]);
+
 function renderStats(): string {
-  const hcp = S().settings.handicap;
+  const hcp = baselineHcp();
   const rounds = S().rounds.map((r) => analyzeRound(app.course, r, hcp)).filter((v) => v.holes.length);
   if (!rounds.length) {
     return `<p class="muted">No rounds yet. Play a round from the Play tab and your strokes gained, hole history and club distances will show up here.</p>${clubsTable()}`;
@@ -576,13 +659,14 @@ function renderStats(): string {
       <b class="num ${v >= 0 ? 'gain' : 'loss'}" style="width:48px;text-align:right">${sgn(v)}</b></div>`;
   }).join('');
   const worst = cats.slice().sort((a, b) => avg(a) - avg(b))[0];
-  const hist = holeHistory(app.course, S(), app.ref);
+  const hist = holeHistory(app.course, S(), app.ref, hcp);
   const h = hole();
   const followed = hist.filter((x) => x.view.followedPlan === true), skipped = hist.filter((x) => x.view.followedPlan === false);
   const avgScore = (xs: typeof hist) => xs.reduce((s, x) => s + x.view.score, 0) / xs.length;
   return `
     <h3>Strokes gained · per 18 holes</h3>
-    ${tracked.length ? `<div class="small muted">From ${tracked.length} tracked hole${tracked.length > 1 ? 's' : ''} in your last ${last5.length} round${last5.length > 1 ? 's' : ''}, compared with a typical ${fmtHcp(hcp)} handicap (approximate).</div>
+    ${tracked.length ? `<div class="small muted">From ${tracked.length} tracked hole${tracked.length > 1 ? 's' : ''} in your last ${last5.length} round${last5.length > 1 ? 's' : ''}, compared with ${baselineName()} (approximate).</div>
+    <div class="seg" style="margin:6px 0">${(['me', 'scratch', 'tour'] as const).map((b) => `<button class="${S().settings.sgBaseline === b ? 'on' : ''}" data-act="sgbase" data-v="${b}">${{ me: 'My level', scratch: 'Scratch', tour: 'Tour' }[b]}</button>`).join('')}</div>
     ${sgRows}
     <div class="card small">Biggest opportunity: <b>${CATEGORY_LABEL[worst]}</b>.</div>` : '<div class="card small">Strokes gained needs shot tracking. Choose <b>Track shots</b> when you start a round (or on any hole), and this fills in. Quick-scored holes still count in the scoring stats below.</div>'}
 
@@ -622,6 +706,31 @@ function clubsTable() {
     <label class="row small" style="margin-top:8px"><input type="checkbox" data-act="usemine" ${S().settings.useMyNumbers ? 'checked' : ''}/> Use my numbers for advice (clubs with 5+ shots)</label>`;
 }
 
+// ---------------- install to home screen ----------------
+let installEvent: any = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; if (app.course) renderPanel(); });
+const isInstalled = () => matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+
+/**
+ * On iPhone, Safari can clear a website's saved data after a few weeks unless it's added
+ * to the Home Screen, so nudge people to install it (not shown inside Claude, or once installed).
+ */
+function installHtml() {
+  if (isInstalled() || S().settings.installDismissed || (window as any).claude || location.protocol !== 'https:' && location.hostname !== '127.0.0.1') return '';
+  if (installEvent) return `<div class="install"><b>Install the app</b><span>Works offline on the course and keeps your rounds safe.</span><div class="row"><button class="btn sm primary" data-act="install">Install</button><button class="btn sm" data-act="installno">Not now</button></div></div>`;
+  if (isIOS()) return `<div class="install"><b>Add to your Home Screen</b><span>On iPhone, Safari can erase saved rounds from websites you haven't opened in a while. Tap <b>Share</b> (□↑), then <b>Add to Home Screen</b> to keep them safe and use it offline.</span><div class="row"><button class="btn sm" data-act="installno">Got it</button></div></div>`;
+  return '';
+}
+
+async function installApp() {
+  if (!installEvent) return;
+  installEvent.prompt();
+  try { await installEvent.userChoice; } catch { /* closed */ }
+  installEvent = null;
+  renderPanel();
+}
+
 // ---------------- panel ----------------
 let lastScreen = '';
 function renderPanel() {
@@ -631,7 +740,7 @@ function renderPanel() {
   const screen = `${app.putt ? 'putt' : app.tab}|${app.ref}|${round()?.id ?? ''}|${rec?.done ?? ''}|${rec?.quick ?? ''}`;
   const scroll = screen === lastScreen ? panel.scrollTop : 0;
   lastScreen = screen;
-  panel.innerHTML = app.putt ? renderPutt() : app.tab === 'plan' ? renderPlan() : app.tab === 'play' ? renderPlay() : renderStats();
+  panel.innerHTML = app.putt ? renderPutt() : (app.tab === 'stats' ? '' : installHtml()) + (app.tab === 'plan' ? renderPlan() : app.tab === 'play' ? renderPlay() : renderStats());
   panel.scrollTop = scroll;
 }
 
@@ -1107,6 +1216,10 @@ function onClick(e: Event) {
     case 'readputt': app.scene.view('green'); startPutt(); break;
     case 'wet': { const order = ['auto', 'wet', 'dry'] as const; S().settings.wet = order[(order.indexOf(S().settings.wet) + 1) % 3]; save(); app.options = null; renderPanel(); break; }
     case 'resetview': app.scene.view(app.scene.currentView); renderTop(); break;
+    case 'sgbase': S().settings.sgBaseline = el.dataset.v as 'me' | 'scratch' | 'tour'; save(); renderPanel(); break;
+    case 'pinsheet': pinSheet(); break;
+    case 'install': void installApp(); break;
+    case 'installno': S().settings.installDismissed = true; save(); renderPanel(); break;
     case 'wind': {
       S().settings.showWind = !S().settings.showWind;
       save();

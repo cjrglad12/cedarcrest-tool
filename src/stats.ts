@@ -228,11 +228,11 @@ export function effectiveBag(state: State, stats: ClubStat[]): Club[] {
   });
 }
 
-export function holeHistory(course: Course, state: State, ref: number) {
+export function holeHistory(course: Course, state: State, ref: number, baseline = state.settings.handicap) {
   const out: { date: string; roundId: string; view: HoleView }[] = [];
   for (const r of state.rounds) {
     const h = r.holes[ref];
-    if (h?.done) out.push({ date: r.date, roundId: r.id, view: analyzeHole(course, h, state.settings.handicap) });
+    if (h?.done) out.push({ date: r.date, roundId: r.id, view: analyzeHole(course, h, baseline) });
   }
   return out.sort((a, b) => b.date.localeCompare(a.date));
 }
