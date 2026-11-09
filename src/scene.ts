@@ -90,6 +90,7 @@ export class HoleScene {
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
       if (this.windGroup.visible && this.windArrows.length) { this.animateWind(dt); this.needsRender = true; }
+      if (this.rollAnim) this.stepRoll(now);
       if (this.controls.update() || this.needsRender) {
         this.renderer.render(this.scene, this.camera);
         this.needsRender = false;
@@ -451,7 +452,7 @@ export class HoleScene {
   setPin(pin: XY) { this.pin = pin; this.placeMarkers(); this.render(); }
 
   setMe(p: XY | null, accuracy = 5) {
-    this.me.visible = !!p;
+    this.me.visible = !!p && !this.puttActive;
     if (p) {
       this.me.position.copy(this.v3(p));
       const halo = this.me.getObjectByName('halo')!;
@@ -820,14 +821,29 @@ export class HoleScene {
   private puttDyn = new THREE.Group(); // ball, aim, path
   private puttRef = -1;
   private puttBase = 0;
-  static PUTT_EX = 5; // vertical exaggeration, so breaks are visible
+  /** How much the green's height is stretched so breaks are easy to see (1 = true shape). */
+  puttEx = 3;
 
   private puttY(p: XY, lift = 0) {
-    return (this.course.height(p[0], p[1]) - this.puttBase) * HoleScene.PUTT_EX + this.y(this.pin) + 0.5 + lift;
+    return (this.course.height(p[0], p[1]) - this.puttBase) * this.puttEx + this.y(this.pin) + 0.5 + lift;
   }
   private pv(p: XY, lift = 0) { return new THREE.Vector3(p[0], this.puttY(p, lift), -p[1]); }
 
-  /** A scale model of this hole's green (1 m elevation, slopes exaggerated and colored). */
+  setPuttExaggeration(v: number) {
+    if (v === this.puttEx) return;
+    this.puttEx = v;
+    this.puttRef = -1;
+    if (this.puttActive) {
+      this.buildPuttSurface();
+      if (this.lastPuttState) this.setPutt(this.lastPuttState);
+      this.puttView(this.currentView === 'puttTop' ? 'above' : 'pov');
+    }
+  }
+
+  /**
+   * A scale model of this hole's green from 1 m elevation: the green and a 2-yard collar,
+   * lightly tinted by steepness, with contour lines every inch of height (closer lines = steeper).
+   */
   private buildPuttSurface() {
     if (!this.hole || this.puttRef === this.hole.ref) return;
     for (const o of [...this.putt.children]) if (o !== this.puttDyn) { this.putt.remove(o); (o as THREE.Mesh).geometry?.dispose(); }
@@ -835,25 +851,40 @@ export class HoleScene {
     const g = this.course.greenOf(this.hole);
     const ring = g ? g.rings[0] : [this.pin];
     const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
-    const M = 6, step = 0.5;
-    const x0 = Math.min(...xs) - M, x1 = Math.max(...xs) + M, y0 = Math.min(...ys) - M, y1 = Math.max(...ys) + M;
+    const COLLAR = 2, step = 0.5;
+    const x0 = Math.min(...xs) - COLLAR * 1.6 - step, x1 = Math.max(...xs) + COLLAR * 1.6 + step, y0 = Math.min(...ys) - COLLAR * 1.6 - step, y1 = Math.max(...ys) + COLLAR * 1.6 + step;
     this.puttBase = this.course.height(this.pin[0], this.pin[1]);
     const nx = Math.ceil((x1 - x0) / step) + 1, ny = Math.ceil((y1 - y0) / step) + 1;
-    const pos = new Float32Array(nx * ny * 3), col = new Float32Array(nx * ny * 3);
-    const c = new THREE.Color(), base = new THREE.Color('#5fae48'), fringe = new THREE.Color('#3f7f31');
+    const N = nx * ny;
+    const pos = new Float32Array(N * 3), col = new Float32Array(N * 3), hTrue = new Float32Array(N);
+    const onGreen = new Uint8Array(N), keep = new Uint8Array(N);
+    const inGreen = (p: XY) => (g ? pointInFeature(p, g) : true);
+    const near = [[COLLAR, 0], [-COLLAR, 0], [0, COLLAR], [0, -COLLAR], [1.4, 1.4], [-1.4, 1.4], [1.4, -1.4], [-1.4, -1.4]];
+    const outer = near.map(([dx, dy]) => [dx * 1.5, dy * 1.5]);
+    const groundColor = new THREE.Color(0x2f6a2b);
+    const c = new THREE.Color(), base = new THREE.Color('#4fb548'), collar = new THREE.Color('#3d8f35');
+    let minY = Infinity;
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
       const p: XY = [x0 + i * step, y0 + j * step], k = j * nx + i;
+      onGreen[k] = inGreen(p) ? 1 : 0;
+      const inCollar = !onGreen[k] && near.some(([dx, dy]) => inGreen([p[0] + dx, p[1] + dy]));
+      const edge = !onGreen[k] && !inCollar && outer.some(([dx, dy]) => inGreen([p[0] + dx, p[1] + dy]));
+      keep[k] = onGreen[k] || inCollar || edge ? 1 : 0;
+      hTrue[k] = this.course.height(p[0], p[1]);
       pos[k * 3] = p[0]; pos[k * 3 + 1] = this.puttY(p); pos[k * 3 + 2] = -p[1];
+      if (keep[k]) minY = Math.min(minY, pos[k * 3 + 1]);
       const e = 0.5, H = (a: number, b: number) => this.course.height(a, b);
-      const pct = Math.hypot(H(p[0] + e, p[1]) - H(p[0] - e, p[1]), H(p[0], p[1] + e) - H(p[0], p[1] - e)) / (2 * e) * 100;
-      const onGreen = g ? pointInFeature(p, g) : true;
-      c.copy(onGreen ? base : fringe).lerp(slopeTint(pct), onGreen ? 0.32 : 0.1);
-      // light stripes so the surface reads as grass and shows its shape
-      if (onGreen && Math.floor((p[0] + p[1]) / 1.5) % 2) c.multiplyScalar(1.05);
+      const pct = (Math.hypot(H(p[0] + e, p[1]) - H(p[0] - e, p[1]), H(p[0], p[1] + e) - H(p[0], p[1] - e)) / (2 * e)) * 100;
+      c.copy(onGreen[k] ? base : collar).lerp(slopeTint(pct), onGreen[k] ? 0.22 : 0.06);
+      if (keep[k] && !onGreen[k] && !near.some(([dx, dy]) => inGreen([p[0] + dx, p[1] + dy]))) c.copy(groundColor); // outer edge fades into the ground
+      if (onGreen[k] && Math.floor((p[0] - p[1]) / 1.2) % 2) c.multiplyScalar(1.06); // mowing stripes
       col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b;
     }
     const idx: number[] = [];
-    for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) { const a = j * nx + i; idx.push(a, a + 1, a + nx, a + 1, a + nx + 1, a + nx); }
+    for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+      const a = j * nx + i, b = a + 1, cc = a + nx, d = cc + 1;
+      if (keep[a] && keep[b] && keep[cc] && keep[d]) idx.push(a, b, cc, b, d, cc);
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -861,15 +892,87 @@ export class HoleScene {
     geo.computeVertexNormals();
     this.puttSurface = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
     this.putt.add(this.puttSurface);
+
+    // Contour lines every inch of height on the green (every 4th one stronger).
+    const INCH = 0.0254;
+    const minor: number[] = [], major: number[] = [];
+    const lift = 0.012;
+    const P = (i: number, j: number) => [x0 + i * step, y0 + j * step] as XY;
+    for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+      const ks = [j * nx + i, j * nx + i + 1, (j + 1) * nx + i + 1, (j + 1) * nx + i];
+      if (!ks.every((k) => onGreen[k])) continue;
+      const corners = [P(i, j), P(i + 1, j), P(i + 1, j + 1), P(i, j + 1)];
+      const hv = ks.map((k) => hTrue[k]);
+      const lo = Math.ceil(Math.min(...hv) / INCH), hi = Math.floor(Math.max(...hv) / INCH);
+      for (let L = lo; L <= hi; L++) {
+        const level = L * INCH;
+        const cross: XY[] = [];
+        for (let e = 0; e < 4; e++) {
+          const h1 = hv[e], h2 = hv[(e + 1) % 4];
+          if ((h1 < level) !== (h2 < level)) {
+            const f = (level - h1) / (h2 - h1);
+            const a = corners[e], b = corners[(e + 1) % 4];
+            cross.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+          }
+        }
+        const out = L % 4 === 0 ? major : minor;
+        for (let q = 0; q + 1 < cross.length; q += 2) {
+          for (const pt of [cross[q], cross[q + 1]]) out.push(pt[0], this.puttY(pt, lift), -pt[1]);
+        }
+      }
+    }
+    for (const [arr, op] of [[minor, 0.28], [major, 0.6]] as const) {
+      if (!arr.length) continue;
+      const lg = new THREE.BufferGeometry();
+      lg.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+      this.putt.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: op })));
+    }
+
+    // Solid ground under the model so it doesn't float.
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(90, 48), new THREE.MeshLambertMaterial({ color: 0x2f6a2b }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set((x0 + x1) / 2, minY - 0.25, -(y0 + y1) / 2);
+    this.putt.add(ground);
+
     // cup and flagstick (flagstick at real height)
     const cup = new THREE.Mesh(new THREE.CircleGeometry(0.054, 24), new THREE.MeshBasicMaterial({ color: 0x111111 }));
-    cup.rotation.x = -Math.PI / 2; cup.position.copy(this.pv(this.pin, 0.01));
+    cup.rotation.x = -Math.PI / 2; cup.position.copy(this.pv(this.pin, 0.015));
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 2.1, 6), new THREE.MeshLambertMaterial({ color: 0xf2f2f2 }));
     pole.position.copy(this.pv(this.pin, 1.05));
     const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.35), new THREE.MeshBasicMaterial({ color: 0xe53935, side: THREE.DoubleSide }));
     flag.position.copy(this.pv(this.pin, 1.9)).add(new THREE.Vector3(0.25, 0, 0));
     this.putt.add(cup, pole, flag);
     if (!this.putt.children.includes(this.puttDyn)) this.putt.add(this.puttDyn);
+  }
+
+  // ---- roll animation ----
+  private rollAnim: { mesh: THREE.Mesh; pts: THREE.Vector3[]; cum: number[]; start: number; dur: number } | null = null;
+
+  /** Watch the ball roll along the predicted line, slowing as it goes. */
+  animatePutt() {
+    const st = this.lastPuttState;
+    if (!st || st.path.length < 2) return;
+    if (this.rollAnim) this.putt.remove(this.rollAnim.mesh);
+    const pts = st.path.map((p) => this.pv(p, 0.05));
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12), new THREE.MeshLambertMaterial({ color: 0xffffff }));
+    this.putt.add(mesh);
+    const len = cum[cum.length - 1];
+    this.rollAnim = { mesh, pts, cum, start: performance.now(), dur: Math.min(6000, 1200 + len * 260) };
+  }
+
+  private stepRoll(now: number) {
+    const a = this.rollAnim;
+    if (!a) return;
+    const t = Math.min(1, (now - a.start) / a.dur);
+    const s = (1 - (1 - t) * (1 - t)) * a.cum[a.cum.length - 1]; // slows to a stop
+    let i = 1;
+    while (i < a.cum.length - 1 && a.cum[i] < s) i++;
+    const f = (s - a.cum[i - 1]) / Math.max(1e-6, a.cum[i] - a.cum[i - 1]);
+    a.mesh.position.copy(a.pts[i - 1]).lerp(a.pts[i], Math.min(1, f));
+    if (t >= 1) setTimeout(() => { if (this.rollAnim === a) { this.putt.remove(a.mesh); a.mesh.geometry.dispose(); this.rollAnim = null; this.render(); } }, 900);
+    this.needsRender = true;
   }
 
   /** Show (or hide with null) the putting model, with the ball, aim point and predicted roll. */
@@ -900,15 +1003,27 @@ export class HoleScene {
     if (state.path.length > 1) {
       const pts = state.path.map((p) => this.pv(p, 0.04));
       const curve = new THREE.CatmullRomCurve3(pts);
-      this.puttDyn.add(new THREE.Mesh(new THREE.TubeGeometry(curve, Math.min(400, pts.length * 2), 0.025, 6, false), new THREE.MeshBasicMaterial({ color: state.holed ? 0x2ecc71 : 0xff8a3d })));
-      const end = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), new THREE.MeshBasicMaterial({ color: state.holed ? 0x2ecc71 : 0xff8a3d }));
+      const pathColor = state.holed ? 0xffffff : 0xff8a3d;
+      this.puttDyn.add(new THREE.Mesh(new THREE.TubeGeometry(curve, Math.min(400, pts.length * 2), this.currentView === 'puttTop' ? 0.05 : 0.025, 6, false), new THREE.MeshBasicMaterial({ color: pathColor })));
+      const end = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), new THREE.MeshBasicMaterial({ color: pathColor }));
       end.position.copy(pts[pts.length - 1]);
       this.puttDyn.add(end);
     }
+    // Fixed-size markers so the ball and cup are easy to find from above.
+    if (this.currentView === 'puttTop') {
+      const ballIcon = dotSprite('#ffffff', '#17221b');
+      ballIcon.position.copy(this.pv(state.ball, 0.1));
+      const cupIcon = iconSprite('flag');
+      cupIcon.position.copy(this.pv(this.pin, 0.1));
+      this.puttDyn.add(ballIcon, cupIcon);
+      this.sizeLabels();
+    }
     this.lastPutt = state;
+    this.lastPuttState = state;
     this.render();
   }
   private lastPutt: { ball: XY; aim: XY } | null = null;
+  private lastPuttState: { ball: XY; aim: XY; path: XY[]; holed: boolean } | null = null;
 
   /** Putting cameras: low behind the ball looking at the hole, or straight down over the putt. */
   puttView(kind: 'pov' | 'above') {
@@ -926,9 +1041,11 @@ export class HoleScene {
     this.controls.touches = { ONE: -1 as unknown as THREE.TOUCH, TWO: THREE.TOUCH.DOLLY_ROTATE };
     this.controls.mouseButtons = { LEFT: -1 as unknown as THREE.MOUSE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
     this.controls.minDistance = 1;
+    if (this.lastPuttState) this.setPutt(this.lastPuttState);
     if (kind === 'pov') {
-      this.camera.position.copy(ballW).addScaledVector(flatDir, -Math.min(4, 1.5 + len * 0.15)).add(new THREE.Vector3(0, 1.1 + len * 0.06, 0));
-      this.controls.target.copy(ballW.clone().lerp(holeW, 0.6));
+      // Crouched behind the ball, eyes on the line.
+      this.camera.position.copy(ballW).addScaledVector(flatDir, -Math.min(3, 1.1 + len * 0.08)).add(new THREE.Vector3(0, 0.6 + len * 0.045, 0));
+      this.controls.target.copy(ballW.clone().lerp(holeW, 0.55));
     } else {
       const aimW = this.group.localToWorld(this.pv(this.lastPutt.aim));
       const pts = [ballW, holeW, aimW];
@@ -1046,6 +1163,20 @@ export function slopeColor(pct: number) {
 }
 
 /** Round map pin for the flag or the tee, drawn at a fixed size on screen. */
+/** Small round marker of a fixed on-screen size. */
+function dotSprite(fill: string, ring: string): THREE.Sprite {
+  const cv = document.createElement('canvas');
+  cv.width = 48; cv.height = 48;
+  const g = cv.getContext('2d')!;
+  g.fillStyle = fill; g.beginPath(); g.arc(24, 24, 17, 0, Math.PI * 2); g.fill();
+  g.lineWidth = 5; g.strokeStyle = ring; g.stroke();
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
+  sp.userData = { w: 48, h: 48, hpx: 20 };
+  sp.renderOrder = 12;
+  return sp;
+}
+
 /** Small yardage marker: distance to the pin. */
 function yardSprite(yds: number): THREE.Sprite {
   const cv = document.createElement('canvas');

@@ -103,6 +103,7 @@ function renderTop() {
     <button class="navbtn" data-act="menu" aria-label="Menu">☰</button>`;
   $('#tabs').innerHTML = (['plan', 'play', 'stats'] as Tab[]).map((k) => `<button data-tab="${k}" class="${app.tab === k ? 'on' : ''}">${{ plan: 'Plan', play: round() ? 'Play ●' : 'Play', stats: 'Stats' }[k]}</button>`).join('');
   const cur = app.scene?.currentView;
+  $('#viewbtns').scrollLeft = 0;
   if (app.putt) {
     $('#viewbtns').innerHTML = `<button data-act="puttpov" class="${cur === 'putt' ? 'on' : ''}">Behind ball</button><button data-act="puttabove" class="${cur === 'puttTop' ? 'on' : ''}">Above</button><button data-act="puttexit">✕ Done</button>`;
     return;
@@ -719,7 +720,10 @@ function renderPutt(): string {
     ${best ? `<div class="card"><div class="small muted">Best line</div><b>${describeAim(best.breakM)}</b><div class="small">Hit it like a ${Math.round(best.flatDistance * M_TO_FT)}-ft putt on a flat green${best.flatDistance > dist(pt.ball, g.hole) * 1.15 ? ' (firm)' : best.flatDistance < dist(pt.ball, g.hole) * 0.95 ? ' (soft, it runs)' : ''}.</div></div>` : ''}
     <div class="elev">Your aim: ${resultText}</div>
     <p class="small muted" style="margin:4px 0">Drag on the green to move the yellow aim marker. Aim farther away to hit it firmer. The line shows how it rolls.</p>
-    <div class="row wrap"><button class="btn primary" data-act="puttbest">Find the line</button><button class="btn" data-act="puttball">${pt.placing ? 'Tap the green…' : 'Move ball'}</button></div>
+    <div class="row wrap"><button class="btn primary" data-act="puttbest">Find the line</button><button class="btn" data-act="puttroll">▶ Roll it</button><button class="btn" data-act="puttball">${pt.placing ? 'Tap the green…' : 'Move ball'}</button></div>
+    <div class="small muted" style="margin:10px 0 6px">Slope view (how much the green's shape is stretched)</div>
+    <div class="seg">${[[1, 'True'], [3, '3×'], [5, '5×']].map(([v, l]) => `<button class="${app.scene.puttEx === v ? 'on' : ''}" data-act="puttex" data-v="${v}">${l}</button>`).join('')}</div>
+    <p class="tiny muted" style="margin-top:4px">White lines are 1 inch of height apart: close together means steep, far apart means flat.</p>
     <div class="small muted" style="margin:10px 0 6px">Green speed (Stimpmeter, feet)</div>
     <div class="seg">${speeds.map(([v, l]) => `<button class="${S().settings.stimp === v ? 'on' : ''}" data-act="stimp" data-v="${v}">${v}${l ? `<small>${l}</small>` : ''}</button>`).join('')}</div>
     <h3>Tips</h3>
@@ -1061,6 +1065,8 @@ function onClick(e: Event) {
     case 'northup': app.scene.view('course'); renderTop(); break;
     case 'puttstart': startPutt(); break;
     case 'puttexit': exitPutt(); break;
+    case 'puttroll': app.scene.animatePutt(); break;
+    case 'puttex': app.scene.setPuttExaggeration(+el.dataset.v!); renderPanel(); break;
     case 'puttpov': app.scene.puttView('pov'); renderTop(); break;
     case 'puttabove': app.scene.puttView('above'); renderTop(); break;
     case 'puttbest': if (app.putt) { const g = puttGreen(); const b = findLine(g, app.putt.ball); app.putt.best = b; if (b) { aimPutt(b.aim); app.putt.result = b.result; } renderPanel(); } break;
