@@ -125,10 +125,23 @@ export function treeStop(ctx: Ctx, to: XY, apex: number): XY | null {
   return null;
 }
 
+/**
+ * Fairway woods and long hybrids off the ground (not a tee) are much harder for higher
+ * handicaps: misses get wider and more of them come up short. Scratch players barely notice.
+ */
+export function offTheDeck(club: string, lie: Lie, handicap: number) {
+  if (lie === 'tee') return 1;
+  const wood = club.includes('Wood') ? 1 : club === 'Hybrid' ? 0.4 : 0;
+  if (!wood) return 1;
+  return 1 + wood * Math.max(0, handicap) * (lie === 'rough' ? 0.03 : 0.02);
+}
+
 /** Average carry-and-roll in meters for a shot on this bearing, after wind, temperature, lie and slope. */
 export function meanDistance(ctx: Ctx, club: Club, brg: number, swing = 1): number {
   const { course, from, cond } = ctx;
-  const base = club.yds * YD * swing * LIE_DISTANCE[ctx.lie] * carryFactor(cond, brg) * lieEffect(ctx, brg).distance * groundFactor(club.name, !!ctx.wet, cond);
+  // Topped and thin fairway-wood shots cost higher handicaps distance on average, too.
+  const deckLoss = 1 - (offTheDeck(club.name, ctx.lie, ctx.handicap) - 1) * 0.25;
+  const base = club.yds * YD * swing * LIE_DISTANCE[ctx.lie] * carryFactor(cond, brg) * lieEffect(ctx, brg).distance * groundFactor(club.name, !!ctx.wet, cond) * deckLoss;
   const h0 = course.height(from[0], from[1]);
   let d = base;
   for (let k = 0; k < 3; k++) {
@@ -142,9 +155,10 @@ export function meanDistance(ctx: Ctx, club: Club, brg: number, swing = 1): numb
 export function evaluate(ctx: Ctx, club: Club, brg: number, swing = 1, n = 160): Option {
   const { course, hole, from, cond } = ctx;
   const meanM = meanDistance(ctx, club, brg, swing);
-  const sdM = (club.sdYds * YD * (swing < 1 ? 0.8 : 1)) / (ctx.lie === 'recovery' ? 0.7 : 1);
   const slopeFx = lieEffect(ctx, brg);
-  const sdDeg = club.sdDeg * (ctx.lie === 'recovery' ? 1.8 : ctx.lie === 'rough' ? 1.15 : 1) * slopeFx.spread;
+  const deck = offTheDeck(club.name, ctx.lie, ctx.handicap);
+  const sdM = ((club.sdYds * YD * (swing < 1 ? 0.8 : 1)) / (ctx.lie === 'recovery' ? 0.7 : 1)) * deck;
+  const sdDeg = club.sdDeg * (ctx.lie === 'recovery' ? 1.8 : ctx.lie === 'rough' ? 1.15 : 1) * slopeFx.spread * deck;
   // Crosswind drift: about 1% of the distance per mph; plus the pull from a sidehill lie.
   const rel = ((cond.windFrom - brg) * Math.PI) / 180;
   const cross = -cond.windMph * Math.sin(rel);
@@ -252,7 +266,7 @@ export function buildPlan(ctx: Ctx): { steps: PlanStep[]; expected: number } {
   let from = ctx.from, lie = ctx.lie;
   let total = 0;
   const green = ctx.course.greenOf(ctx.hole);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 6; i++) {
     const opt = suggest({ ...ctx, from, lie }, 1)[0];
     if (!opt) break;
     steps.push({ club: opt.club, target: opt.aim });

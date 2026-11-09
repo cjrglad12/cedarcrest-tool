@@ -148,7 +148,7 @@ describe('advice', () => {
     for (const h of course.holes) {
       const plan = buildPlan(ctxFor(h.ref));
       expect(plan.steps.length).toBeGreaterThan(0);
-      expect(plan.steps.length).toBeLessThanOrEqual(h.par);
+      expect(plan.steps.length).toBeLessThanOrEqual(h.par + 1);
       const last = plan.steps[plan.steps.length - 1].target;
       expect(toYds(dist(last, h.pin))).toBeLessThan(40);
       expect(plan.expected).toBeGreaterThan(h.par - 0.8);
@@ -382,5 +382,24 @@ describe('putting extras', () => {
     expect(west.stop[0]).toBeLessThan(plain.stop[0] - 0.05);
     const downGrain = roll({ ...flat, grainToward: 0 }, [0, 0], 0, speedFor(10, 5));
     expect(downGrain.stop[1]).toBeGreaterThan(plain.stop[1]);
+  });
+});
+
+describe('higher handicaps', () => {
+  it('fairway woods off the ground are harder for high handicaps, not for scratch', async () => {
+    const { offTheDeck } = await import('../src/advice');
+    expect(offTheDeck('3 Wood', 'fairway', 30)).toBeGreaterThan(1.5);
+    expect(offTheDeck('3 Wood', 'fairway', 0)).toBe(1);
+    expect(offTheDeck('3 Wood', 'tee', 30)).toBe(1);
+    expect(offTheDeck('7 Iron', 'fairway', 30)).toBe(1);
+  });
+});
+
+describe('no handicap yet', () => {
+  it('estimates a handicap from a usual score', async () => {
+    const { handicapFromScore: est } = await import('../src/gps');
+    expect(est(100)).toBe(24);
+    expect(est(85)).toBe(11);
+    expect(est(70)).toBe(0);
   });
 });

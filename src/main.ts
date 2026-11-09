@@ -1,5 +1,5 @@
 import './styles.css';
-import { bestFix, fmtHcp, parseHcp } from './gps';
+import { bestFix, fmtHcp, parseHcp, handicapFromScore } from './gps';
 import { findLine, roll, speedFor, rise, describeAim, learnStimp, M_TO_FT, PuttGreen, PuttResult, PuttRead } from './putt';
 import { tipsFor, isWet, Tip } from './tips';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature, fromBearing, ringCentroid } from './course';
@@ -134,29 +134,39 @@ function renderHint() {
 
 function welcome() {
   let hcp = S().settings.handicap, drv = S().bag.find((c) => c.name === 'Driver')?.yds ?? 230, tees = S().settings.teeSet;
+  let noHcp = false, usual = 100;
   const draw = () => {
     modal(`<h2>Welcome to Cedar Crest</h2>
       <p class="small muted">Three quick questions so the yardages and advice fit your game. You can change them later in ☰.</p>
-      <div class="row spread" style="margin-top:12px"><label for="w-hcp">Handicap index</label><input id="w-hcp" class="hcp-in" inputmode="decimal" autocomplete="off" value="${fmtHcp(hcp)}" placeholder="12.4 or +2.1"/></div>
-      <div class="tiny muted" style="text-align:right">Use + for a plus handicap, e.g. +2.1</div>
-      <div class="row spread" style="margin-top:12px"><span>Driver distance</span><div class="stepper"><button data-w="drv" data-d="-5" aria-label="Shorter">−</button><b>${drv}</b><button data-w="drv" data-d="5" aria-label="Longer">+</button></div></div>
+      ${noHcp ? `<div class="row spread" style="margin-top:12px"><span>What do you usually shoot?</span><div class="stepper"><button data-w="usual" data-d="-1" aria-label="Lower score">−</button><b>${usual}</b><button data-w="usual" data-d="1" aria-label="Higher score">+</button></div></div>
+        <div class="tiny muted" style="text-align:right">That's about a ${handicapFromScore(usual)} handicap. <button class="linkish" data-w="hashcp">I have a handicap</button></div>`
+      : `<div class="row spread" style="margin-top:12px"><label for="w-hcp">Handicap index</label><input id="w-hcp" class="hcp-in" inputmode="decimal" autocomplete="off" value="${fmtHcp(hcp)}" placeholder="12.4 or +2.1"/></div>
+        <div class="tiny muted" style="text-align:right">Use + for a plus handicap, e.g. +2.1. <button class="linkish" data-w="nohcp">I don't have one</button></div>`}
+      <div class="row spread" style="margin-top:12px"><span>Driver distance (yds)</span><div class="stepper"><button data-w="drv" data-d="-5" aria-label="Shorter">−</button><b>${drv}</b><button data-w="drv" data-d="5" aria-label="Longer">+</button></div></div>
+      <div class="tiny muted" style="text-align:right">Not sure? Most golfers carry and roll it 180–240.</div>
       <div class="small muted" style="margin:12px 0 6px">Tees you usually play</div>
-      <div class="seg">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<button class="${t === tees ? 'on' : ''}" data-w="tees" data-v="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>
+      <div class="seg">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<button class="${t === tees ? 'on' : ''}" data-w="tees" data-v="${t}">${teeName(t)}</button>`).join('')}</div>
       <button class="btn primary wide" style="margin-top:16px" data-w="go">Let's go</button>`);
     $('#modal').onclick = (e) => {
       const b = (e.target as HTMLElement).closest('[data-w]') as HTMLElement | null;
       if (!b) return;
       const w = b.dataset.w;
-      const typed = parseHcp(($('#w-hcp') as HTMLInputElement).value);
+      const input = document.getElementById('w-hcp') as HTMLInputElement | null;
+      const typed = input ? parseHcp(input.value) : null;
       if (typed !== null) hcp = typed;
-      if (w === 'drv') drv = Math.max(150, Math.min(330, drv + +b.dataset.d!));
+      if (w === 'nohcp') noHcp = true;
+      if (w === 'hashcp') noHcp = false;
+      if (w === 'usual') usual = Math.max(65, Math.min(140, usual + +b.dataset.d!));
+      if (w === 'drv') drv = Math.max(120, Math.min(330, drv + +b.dataset.d!));
       if (w === 'tees') tees = b.dataset.v as TeeSet;
       if (w === 'go') {
-        if (typed === null) { toast('Enter your handicap like 12.4, or +2.1 for a plus handicap'); return; }
+        if (noHcp) hcp = handicapFromScore(usual);
+        else if (typed === null) { toast('Enter your handicap like 12.4, or +2.1 for a plus handicap'); return; }
         const base = S().bag.find((c) => c.name === 'Driver')?.yds ?? 230;
         const k = drv / base;
         S().bag = S().bag.map((c) => ({ ...c, yds: Math.round(c.yds * k) }));
-        Object.assign(S().settings, { handicap: hcp, teeSet: tees, onboarded: true });
+        // Higher handicaps start in the simpler view (it can be switched in ☰).
+        Object.assign(S().settings, { handicap: hcp, teeSet: tees, onboarded: true, simple: noHcp || hcp >= 25 });
         saveNow(S()); refreshBag(); closeModal(); refresh({ camera: true });
         return;
       }
@@ -319,7 +329,7 @@ function renderPlan(): string {
       <button class="btn" data-act="addstep">+ Shot</button>
       ${steps.length ? '<button class="btn danger" data-act="clearplan">Clear</button>' : ''}
     </div>
-    ${steps.length ? `<p class="small muted">Expected score with this plan: <b>${planExpected().toFixed(2)}</b> (par ${h.par})</p>` : ''}
+    ${steps.length ? `<p class="small muted">${S().settings.simple ? `With this plan you'd usually make about <b>${Math.round(planExpected())}</b> here (par ${h.par}).` : `Expected score with this plan: <b>${planExpected().toFixed(2)}</b> (par ${h.par})`}</p>` : ''}
 
     <h3>Compare clubs from the tee</h3>
     ${optList || '<button class="btn" data-act="opts">Show options off the tee</button>'}
@@ -355,10 +365,10 @@ function renderOptions(): string {
     <li class="opt ${i === app.selOpt ? 'sel' : ''}" data-act="selopt" data-i="${i}" style="border-radius:10px;padding:8px">
       <div class="grow"><b>${o.club}</b> <span class="small muted">${Math.round(o.carryYds)} yds${o.swing < 0.99 ? ' (soft)' : ''} · leaves ${Math.round(o.leaveYds)}</span>
       <div class="tiny muted">${o.pGreen > 0.02 ? `green ${pct(o.pGreen)} · ` : ''}${o.pFairway > 0.02 ? `fairway ${pct(o.pFairway)} · ` : ''}sand ${pct(o.pSand)} · trees/water/OB ${pct(o.pTrouble)}${o.pOther > 0.02 ? ` · other hole ${pct(o.pOther)}` : ''}</div></div>
-      <div style="text-align:right"><b class="num">${o.expected.toFixed(2)}</b><div class="tiny ${i ? 'loss' : 'gain'}">${i ? '+' + (o.expected - best).toFixed(2) : 'best'}</div></div>
+      <div style="text-align:right">${S().settings.simple ? `<b class="${i ? '' : 'gain'}">${i ? (o.expected - best < 0.08 ? 'Also good' : o.pTrouble < opts[0].pTrouble - 0.01 ? 'Safer, but leaves more' : 'Riskier') : 'Best'}</b>` : `<b class="num">${o.expected.toFixed(2)}</b><div class="tiny ${i ? 'loss' : 'gain'}">${i ? '+' + (o.expected - best).toFixed(2) : 'best'}</div>`}</div>
     </li>`).join('')}</ul>
     <div class="row wrap"><button class="btn sm primary" data-act="useopt">Use ${opts[app.selOpt].club}</button><button class="btn sm" data-act="closeopts">Hide</button></div>
-    <p class="tiny muted">Expected strokes to finish the hole. Based on ${S().settings.useMyNumbers && app.stats.some((s) => s.n >= 5) ? 'your recorded distances and misses' : 'typical numbers for your handicap'}; the yellow oval is where ~80% of shots land.</p>`;
+    <p class="tiny muted">${S().settings.simple ? 'Ranked by how many strokes each choice usually takes to finish the hole.' : 'Expected strokes to finish the hole.'} Based on ${S().settings.useMyNumbers && app.stats.some((s) => s.n >= 5) ? 'your recorded distances and misses' : 'typical numbers for your handicap'}; the yellow oval is where ~80% of shots land.</p>`;
 }
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
@@ -664,11 +674,11 @@ function renderStats(): string {
   const followed = hist.filter((x) => x.view.followedPlan === true), skipped = hist.filter((x) => x.view.followedPlan === false);
   const avgScore = (xs: typeof hist) => xs.reduce((s, x) => s + x.view.score, 0) / xs.length;
   return `
-    <h3>Strokes gained · per 18 holes</h3>
+    ${S().settings.simple ? '' : `<h3>Strokes gained · per 18 holes</h3>
     ${tracked.length ? `<div class="small muted">From ${tracked.length} tracked hole${tracked.length > 1 ? 's' : ''} in your last ${last5.length} round${last5.length > 1 ? 's' : ''}, compared with ${baselineName()} (approximate).</div>
     <div class="seg" style="margin:6px 0">${(['me', 'scratch', 'tour'] as const).map((b) => `<button class="${S().settings.sgBaseline === b ? 'on' : ''}" data-act="sgbase" data-v="${b}">${{ me: 'My level', scratch: 'Scratch', tour: 'Tour' }[b]}</button>`).join('')}</div>
     ${sgRows}
-    <div class="card small">Biggest opportunity: <b>${CATEGORY_LABEL[worst]}</b>.</div>` : '<div class="card small">Strokes gained needs shot tracking. Choose <b>Track shots</b> when you start a round (or on any hole), and this fills in. Quick-scored holes still count in the scoring stats below.</div>'}
+    <div class="card small">Biggest opportunity: <b>${CATEGORY_LABEL[worst]}</b>.</div>` : '<div class="card small">Strokes gained needs shot tracking. Choose <b>Track shots</b> when you start a round (or on any hole), and this fills in. Quick-scored holes still count in the scoring stats below.</div>'}`}
 
     ${(() => {
       const st = scoringStats(rounds.slice(-5).flatMap((v) => v.holes));
@@ -678,10 +688,10 @@ function renderStats(): string {
       return `<h3>Scoring · ${nr === 1 ? 'last round' : `last ${nr} rounds`}</h3>
       <div class="statgrid">
         <div><b>${pc(st.fairwayPct)}</b><span>Fairways${st.fairwayLeft + st.fairwayRight ? ` · miss ${st.fairwayLeft}L/${st.fairwayRight}R` : ''}</span></div>
-        <div><b>${pc(st.girPct)}</b><span>Greens in reg.</span></div>
+        <div><b>${pc(st.girPct)}</b><span>${S().settings.simple ? 'Greens hit' : 'Greens in reg.'}</span></div>
         <div><b>${pc(st.scramblePct)}</b><span>Up &amp; down</span></div>
         <div><b>${st.puttsPer18.toFixed(1)}</b><span>Putts / 18</span></div>
-        <div><b>${st.puttsPerGir === null ? '–' : st.puttsPerGir.toFixed(2)}</b><span>Putts per GIR</span></div>
+        <div><b>${st.puttsPerGir === null ? '–' : st.puttsPerGir.toFixed(2)}</b><span>${S().settings.simple ? 'Putts when on in reg.' : 'Putts per GIR'}</span></div>
         <div><b>${st.penaltiesPer18.toFixed(1)}</b><span>Penalties / 18</span></div>
       </div>
       ${mg.short + mg.long + mg.left + mg.right ? `<div class="small muted">Missed greens: ${mg.short} short · ${mg.long} long · ${mg.left} left · ${mg.right} right</div>` : ''}`;
@@ -845,7 +855,7 @@ function renderPutt(): string {
     <p class="tiny muted" style="margin-top:4px">White lines are 1 inch of height apart: close together means steep, far apart means flat.</p>
     <div class="small muted" style="margin:10px 0 6px">Grain (bermuda): which way does it grow?</div>
     <div class="row wrap">${[['off', 'Ignore'], ['270', 'Toward sunset (W)'], ['other', 'Other…']].map(([v, l]) => `<button class="btn sm ${(v === 'off' && S().settings.grainToward === null) || (v === '270' && S().settings.grainToward === 270) || (v === 'other' && S().settings.grainToward !== null && S().settings.grainToward !== 270) ? 'primary' : ''}" data-act="grain" data-v="${v}">${l}${v === 'other' && S().settings.grainToward !== null && S().settings.grainToward !== 270 ? ` (${compass(S().settings.grainToward!)})` : ''}</button>`).join('')}</div>
-    <div class="small muted" style="margin:10px 0 6px">Green speed (Stimpmeter, feet)</div>
+    <div class="small muted" style="margin:10px 0 6px">Green speed${S().settings.simple ? ' (how fast putts roll)' : ' (Stimpmeter, feet)'}</div>
     <div class="seg">${speeds.map(([v, l]) => `<button class="${S().settings.stimp === v ? 'on' : ''}" data-act="stimp" data-v="${v}">${v}${l ? `<small>${l}</small>` : ''}</button>`).join('')}</div>
     <h3>Tips</h3>
     ${tipsHtml(tips)}
@@ -908,6 +918,8 @@ function menu() {
     <div class="row spread"><span>Handicap</span><input class="hcp-in" inputmode="decimal" autocomplete="off" value="${fmtHcp(s.handicap)}" data-set="handicap" aria-label="Handicap index"/></div>
     <div class="row spread" style="margin-top:8px"><span>Default tees</span><select class="clubsel" data-set="teeSet">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<option ${t === s.teeSet ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
     <div class="row spread" style="margin-top:8px"><span>Slope exaggeration</span><select class="clubsel" data-set="exaggerate">${[1, 1.5, 2, 3].map((v) => `<option value="${v}" ${v === s.exaggerate ? 'selected' : ''}>${v}×</option>`).join('')}</select></div>
+    <label class="row spread" style="margin-top:8px"><span>Simple view (plain words, fewer numbers)</span><input type="checkbox" data-set="simple" ${s.simple ? 'checked' : ''}/></label>
+    <label class="row spread" style="margin-top:8px"><span>Larger text</span><input type="checkbox" data-set="bigText" ${s.bigText ? 'checked' : ''}/></label>
     <label class="row spread" style="margin-top:8px"><span>Left-handed</span><input type="checkbox" data-set="leftHanded" ${s.leftHanded ? 'checked' : ''}/></label>
     <label class="row spread" style="margin-top:8px"><span>Practice mode (place ball by hand)</span><input type="checkbox" data-set="simulateGps" ${s.simulateGps ? 'checked' : ''}/></label>
     <h3>Course rating &amp; slope</h3>
@@ -1340,6 +1352,7 @@ function onChange(e: Event) {
     save();
     if (k === 'exaggerate') app.scene.setExaggeration(v as number);
     if (k === 'simulateGps' && !v) app.sim = null;
+    if (k === 'bigText') document.documentElement.classList.toggle('big', !!v);
     refresh();
     return;
   }
@@ -1392,6 +1405,7 @@ async function boot() {
   app.scene.setExaggeration(S().settings.exaggerate);
   const hash = +location.hash.replace('#', '');
   if (hash >= 1 && hash <= 18) app.ref = hash;
+  document.documentElement.classList.toggle('big', !!S().settings.bigText);
   setSaveErrorHandler(() => toast("Couldn't save. Your phone's storage may be full. Export a backup from ☰ now.", 6000, true));
   if (recoveredFrom) setTimeout(() => toast("Your saved data couldn't be read, so a copy was kept and the app started fresh. Import a backup from ☰ if you have one.", 7000, true), 1500);
   document.addEventListener('click', onClick);

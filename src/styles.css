@@ -175,3 +175,12 @@ table.card-t td:first-child, table.card-t th:first-child { text-align: left; pad
 .clubrec { margin: 6px 0 2px; font-size: 14px; text-align: center; }
 .install { display: grid; gap: 6px; padding: 10px 12px; margin: 4px 0 8px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); font-size: 13.5px; }
 .install b:first-child { font-size: 15px; }
+/* Larger text (setting): scales the panel, header and buttons. */
+html.big body { font-size: 17px; }
+html.big #panel, html.big #modal .box { font-size: 17px; }
+html.big .small { font-size: 15px; }
+html.big .tiny { font-size: 13px; }
+html.big .big3 b { font-size: 30px; }
+html.big .big3.play b { font-size: 36px; }
+html.big .btn { font-size: 16.5px; }
+html.big #viewbtns button { font-size: 15px; height: 38px; }

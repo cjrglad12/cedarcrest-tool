@@ -89,6 +89,8 @@ export interface Settings {
   stimpToday: { date: string; value: number } | null; // green speed learned from today's putts
   sgBaseline: 'me' | 'scratch' | 'tour'; // who strokes gained compares you with
   installDismissed: boolean;
+  simple: boolean; // plain words, fewer numbers
+  bigText: boolean;
 }
 
 export interface State {
@@ -107,7 +109,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false, grainToward: null, stimpToday: null, sgBaseline: 'me', installDismissed: false },
+    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false, grainToward: null, stimpToday: null, sgBaseline: 'me', installDismissed: false, simple: false, bigText: false },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},

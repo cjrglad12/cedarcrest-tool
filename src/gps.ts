@@ -31,3 +31,8 @@ export function parseHcp(text: string): number | null {
   if (v > 54) return null;
   return m[1] ? -v : v;
 }
+
+/** A rough Handicap Index from a usual 18-hole score (for golfers who don't have one). */
+export function handicapFromScore(score: number) {
+  return Math.max(0, Math.min(54, Math.round((score - 72) * 0.85)));
+}
