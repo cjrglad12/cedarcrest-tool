@@ -1,7 +1,7 @@
 // Downloads Cedar Crest's layout from OpenStreetMap and its elevation from
 // USGS 3DEP, then writes public/data/course.json and public/data/terrain.bin.
 // Run with: npm run fetch-course
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
 
 const COURSE_NAME = 'Cedar Crest Golf Course';
 // Search area (lon/lat) that contains the whole course.
@@ -408,6 +408,13 @@ async function main() {
   for (const v of canopy) if (v >= 4) treeCells++;
   console.log(`Trees (4 m+) cover ${((100 * treeCells) / canopy.length).toFixed(0)}% of the area`);
 
+  // Scorecard corrections (par, stroke index, tee names and ratings).
+  const overrides = JSON.parse(await readFile(new URL('./course-overrides.json', import.meta.url), 'utf8'));
+  for (const h of holes) {
+    if (overrides.par?.[h.ref]) h.par = overrides.par[h.ref];
+    if (overrides.strokeIndex?.[h.ref - 1]) h.handicap = overrides.strokeIndex[h.ref - 1];
+  }
+
   await mkdir(OUT, { recursive: true });
   await writeFile(new URL('terrain.bin', OUT), Buffer.from(grid.buffer));
   await writeFile(new URL('canopy.bin', OUT), Buffer.from(canopy.buffer));
@@ -422,6 +429,7 @@ async function main() {
     boundary: boundaryRings,
     holes, features, paths, trees,
     landmarks: { buildings, parking, roads },
+    tees: overrides.tees ?? {},
   };
   await writeFile(new URL('course.json', OUT), JSON.stringify(course));
   console.log('Wrote public/data/course.json and terrain.bin');

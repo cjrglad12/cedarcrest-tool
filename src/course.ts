@@ -36,6 +36,8 @@ export interface CourseData {
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   terrain: { file: string; cols: number; rows: number; cell: number; minX: number; minY: number; minH: number; maxH: number; scale: number };
   canopy?: { file: string; source: string }; // tree heights (m) on the terrain grid
+  /** Scorecard tee names, ratings and slopes by tee set (from the published scorecard). */
+  tees?: Partial<Record<'back' | 'middle' | 'forward', { name: string; rating: number; slope: number; yards: number }>>;
   landmarks?: {
     buildings: { ring: XY[]; name: string | null; levels: number | null; area: number; clubhouse?: boolean }[];
     parking: XY[][];

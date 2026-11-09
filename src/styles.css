@@ -154,3 +154,4 @@ table.card-t td:first-child, table.card-t th:first-child { text-align: left; pad
 .statgrid div { background: var(--chip); border-radius: 12px; padding: 8px 6px; text-align: center; }
 .statgrid b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
 .statgrid span { font-size: 11px; color: var(--muted); }
+#toast.warn { background: #8a2b1a; }

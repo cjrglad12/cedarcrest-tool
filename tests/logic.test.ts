@@ -7,7 +7,7 @@ import { suggest, buildPlan } from '../src/advice';
 import { analyzeHole, clubStats, effectiveBag } from '../src/stats';
 import { freshState, migrate, DEFAULT_BAG, HoleRec } from '../src/store';
 import { bestFix, fmtHcp, parseHcp } from '../src/gps';
-import { differential, spreadFactor, scoringStats } from '../src/stats';
+import { differential, spreadFactor, scoringStats, courseHandicap, strokesOnHole, adjustedGross } from '../src/stats';
 
 const data: CourseData = JSON.parse(readFileSync(new URL('../public/data/course.json', import.meta.url), 'utf8'));
 const raw = readFileSync(new URL('../public/data/terrain.bin', import.meta.url));
@@ -247,5 +247,24 @@ describe('handicaps and posting', () => {
     ]);
     expect(st.scramblePct).toBeCloseTo(0.5);
     expect(st.puttsPerGir).toBe(2);
+  });
+});
+
+describe('net double bogey', () => {
+  it('works out course handicap and strokes per hole', () => {
+    expect(courseHandicap(12.4, 71.7, 133, 71)).toBe(15); // 12.4 × 133/113 + 0.7 = 15.3
+    expect(strokesOnHole(15, 1)).toBe(1);
+    expect(strokesOnHole(15, 16)).toBe(0);
+    expect(strokesOnHole(20, 2)).toBe(2);
+    expect(strokesOnHole(-2, 18)).toBe(-1); // plus 2 gives back on the two easiest holes
+    expect(strokesOnHole(-2, 16)).toBe(0);
+  });
+  it('caps a blow-up hole', () => {
+    // 15 course handicap, par 4 with stroke index 1: cap = 4 + 2 + 1 = 7
+    expect(adjustedGross([{ score: 10, par: 4, strokeIndex: 1 }, { score: 5, par: 4, strokeIndex: 18 }], 15)).toBe(12);
+  });
+  it('has par 71 and a stroke index on every hole', () => {
+    expect(course.holes.reduce((a, h) => a + h.par, 0)).toBe(71);
+    expect(new Set(course.holes.map((h) => h.handicap)).size).toBe(18);
   });
 });

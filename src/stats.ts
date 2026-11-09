@@ -236,3 +236,22 @@ export function holeHistory(course: Course, state: State, ref: number) {
   }
   return out.sort((a, b) => b.date.localeCompare(a.date));
 }
+
+/** Course Handicap: Handicap Index × slope / 113 + (course rating − par), rounded. Plus handicaps are negative. */
+export function courseHandicap(index: number, rating: number, slope: number, par: number) {
+  return Math.round(index * (slope / 113) + (rating - par));
+}
+
+/** Handicap strokes received on a hole of this stroke index (negative = a stroke given back). */
+export function strokesOnHole(courseHcp: number, strokeIndex: number) {
+  if (courseHcp >= 0) return Math.floor(courseHcp / 18) + (courseHcp % 18 >= strokeIndex ? 1 : 0);
+  return strokeIndex > 18 + courseHcp ? -1 : 0; // plus handicaps give strokes back on the easiest holes
+}
+
+/** Adjusted gross score: each hole capped at net double bogey (par + 2 + strokes received). */
+export function adjustedGross(holes: { score: number; par: number; strokeIndex: number | null }[], courseHcp: number) {
+  return holes.reduce((sum, h) => {
+    const cap = h.strokeIndex ? h.par + 2 + strokesOnHole(courseHcp, h.strokeIndex) : Infinity;
+    return sum + Math.min(h.score, cap);
+  }, 0);
+}

@@ -4,9 +4,9 @@ import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature } f
 import { HoleScene, dispersion, ViewName } from './scene';
 import { Conditions, fetchConditions, windComponents, playsLike, compass } from './conditions';
 import { suggest, buildPlan, evaluate, Option, Ctx } from './advice';
-import { analyzeRound, analyzeHole, clubStats, effectiveBag, holeHistory, ClubStat, scoringStats, differential } from './stats';
+import { analyzeRound, analyzeHole, clubStats, effectiveBag, holeHistory, ClubStat, scoringStats, differential, courseHandicap, adjustedGross } from './stats';
 import { CATEGORY_LABEL, Category } from './sg';
-import { loadState, saveState, saveNow, migrate, uid, freshState, State, Round, HoleRec, HolePlan, TeeSet, Club, DEFAULT_BAG } from './store';
+import { loadState, saveState, saveNow, migrate, uid, freshState, recoveredFrom, setSaveErrorHandler, State, Round, HoleRec, HolePlan, TeeSet, Club, DEFAULT_BAG } from './store';
 
 type Tab = 'plan' | 'play' | 'stats';
 type Mode = null | { kind: 'aim'; step: number } | { kind: 'pin' } | { kind: 'sim' } | { kind: 'green' };
@@ -63,9 +63,13 @@ function ctx(from: XY, lie: Lie): Ctx {
   return { course: app.course, hole: hole(), from, lie, pin: pin(), cond: cond(), bag: app.bag, handicap: S().settings.handicap };
 }
 
-function toast(msg: string, ms = 2200) {
+let warningUntil = 0;
+/** Short message at the bottom. A warning stays up for its full time; routine messages don't replace it. */
+function toast(msg: string, ms = 2200, warning = false) {
+  if (!warning && Date.now() < warningUntil) return;
+  if (warning) warningUntil = Date.now() + ms;
   const t = $('#toast');
-  t.textContent = msg; t.classList.add('show');
+  t.textContent = msg; t.classList.toggle('warn', warning); t.classList.add('show');
   clearTimeout((t as any)._h); (t as any)._h = setTimeout(() => t.classList.remove('show'), ms);
 }
 
@@ -88,10 +92,10 @@ function windText(from: XY, to: XY) {
 function renderTop() {
   const h = hole(), t = tee();
   const rec = holeRec();
-  const score = rec?.done ? ` · scored ${analyzeHole(app.course, rec, S().settings.handicap).score}` : '';
+  const score = rec?.done ? ` · You: ${analyzeHole(app.course, rec, S().settings.handicap).score}` : '';
   $('#top').innerHTML = `
     <button class="navbtn" data-act="prev" aria-label="Previous hole">‹</button>
-    <div class="hole"><b>Hole ${h.ref}</b> · Par ${h.par}<small>${t.lengthYds} yds · ${teeSet()} tees${score}</small></div>
+    <div class="hole"><b>Hole ${h.ref}</b> · Par ${h.par}<small>${t.lengthYds} yds · ${teeName(teeSet())}${h.handicap ? ` · Hcp ${h.handicap}` : ''}${score}</small></div>
     <button class="navbtn" data-act="next" aria-label="Next hole">›</button>
     <button class="navbtn" data-act="menu" aria-label="Menu">☰</button>`;
   $('#tabs').innerHTML = (['plan', 'play', 'stats'] as Tab[]).map((k) => `<button data-tab="${k}" class="${app.tab === k ? 'on' : ''}">${{ plan: 'Plan', play: round() ? 'Play ●' : 'Play', stats: 'Stats' }[k]}</button>`).join('');
@@ -341,7 +345,7 @@ function renderPlay(): string {
     return `
       <h3>Start a round</h3>
       <div class="small muted" style="margin-bottom:6px">Tees</div>
-      <div class="seg">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<button class="${S().settings.teeSet === t ? 'on' : ''}" data-act="teeset" data-v="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>
+      <div class="seg">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<button class="${S().settings.teeSet === t ? 'on' : ''}" data-act="teeset" data-v="${t}">${teeName(t)}${app.course.data.tees?.[t] ? `<small>${app.course.data.tees[t]!.rating} / ${app.course.data.tees[t]!.slope}</small>` : ''}</button>`).join('')}</div>
       <div class="small muted" style="margin:12px 0 6px">How do you want to keep score?</div>
       <div class="seg">
         <button class="${!track ? 'on' : ''}" data-act="trackshots" data-v="0">Score only<small>Quick: strokes, putts, fairway</small></button>
@@ -425,12 +429,22 @@ function renderPlay(): string {
     ${roundFooter()}`;
 }
 
+/** Rating and slope for a tee set: yours from Settings, else the published scorecard. */
+function ratingFor(set: TeeSet) {
+  const mine = S().settings.ratings[set];
+  if (mine && mine.rating > 50 && mine.slope >= 55 && mine.slope <= 155) return mine;
+  const pub = app.course.data.tees?.[set];
+  return pub ? { rating: pub.rating, slope: pub.slope } : null;
+}
+
+const teeName = (set: TeeSet) => app.course.data.tees?.[set]?.name ?? set[0].toUpperCase() + set.slice(1);
+
 function copyForGhin(roundId?: string) {
   const r = (roundId ? S().rounds.find((x) => x.id === roundId) : round()) ?? null;
   if (!r) return;
   const views = analyzeRound(app.course, r, S().settings.handicap).holes;
   const line = (v: (typeof views)[number]) => `${v.ref}: ${v.score} (${v.putts} putt${v.putts === 1 ? '' : 's'}${v.fairway === null ? '' : v.fairway ? ', FIR' : `, missed ${v.fairwayMiss ?? 'fairway'}`}${v.gir ? ', GIR' : ''}${v.penalties ? `, ${v.penalties} pen` : ''})`;
-  const text = [`Cedar Crest · ${new Date(r.date).toLocaleDateString()} · ${r.teeSet} tees`, ...views.map(line), `Total ${views.reduce((a, v) => a + v.score, 0)} over ${views.length} holes`].join('\n');
+  const text = [`Cedar Crest · ${new Date(r.date).toLocaleDateString()} · ${teeName(r.teeSet)} tees`, ...views.map(line), `Total ${views.reduce((a, v) => a + v.score, 0)} over ${views.length} holes`].join('\n');
   navigator.clipboard.writeText(text).then(() => toast('Copied. Paste into notes, then enter in GHIN.'), () => toast("Couldn't copy here. Take a screenshot of the scorecard instead."));
 }
 
@@ -458,13 +472,16 @@ function scorecard(roundId?: string) {
   };
   const all = [...views.values()];
   const total = all.reduce((a, v) => a + v.score, 0), par = all.reduce((a, v) => a + v.par, 0);
-  const rr = S().settings.ratings[r.teeSet];
-  const rs = rr && rr.rating > 50 && rr.slope >= 55 && rr.slope <= 155 ? rr : null;
-  const diff = rs && all.length === 18 ? differential(total, rs.rating, rs.slope) : null;
-  modal(`<h2>Scorecard · ${new Date(r.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · ${r.teeSet} tees</h2>
+  const rs = ratingFor(r.teeSet);
+  const coursePar = app.course.holes.reduce((a, h) => a + h.par, 0);
+  const ch = rs ? courseHandicap(S().settings.handicap, rs.rating, rs.slope, coursePar) : null;
+  const ags = ch !== null && all.length === 18 ? adjustedGross(all.map((v) => ({ score: v.score, par: v.par, strokeIndex: app.course.hole(v.ref).handicap })), ch) : null;
+  const diff = rs && ags !== null ? differential(ags, rs.rating, rs.slope) : null;
+  modal(`<h2>Scorecard · ${new Date(r.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · ${teeName(r.teeSet)} tees</h2>
     <div class="scroll-x">${nine(1)}</div><div class="scroll-x" style="margin-top:8px">${nine(10)}</div>
     <p><b>${all.length ? total : '–'}</b> ${all.length ? `(${total - par === 0 ? 'E' : sgn(total - par, 0)}) over ${all.length} holes` : ''}</p>
-    ${diff !== null ? `<p class="small">Score differential <b>${diff.toFixed(1)}</b> <span class="muted">(${rs!.rating} / ${rs!.slope}, from your gross score; GHIN caps each hole at net double bogey, which can lower it)</span></p>` : all.length === 18 && !rs ? '<p class="tiny muted">Add the course rating and slope for these tees in ☰ Settings to see your score differential.</p>' : ''}
+    ${diff !== null ? `<div class="statgrid"><div><b>${ags}</b><span>Adjusted gross</span></div><div><b>${diff.toFixed(1)}</b><span>Differential</span></div><div><b>${ch! < 0 ? '+' + -ch! : ch}</b><span>Course handicap</span></div></div>
+      <p class="tiny muted">${teeName(r.teeSet)} tees ${rs!.rating} / ${rs!.slope}. Each hole is capped at net double bogey, the same way GHIN adjusts it.</p>` : all.length === 18 && !rs ? '<p class="tiny muted">Add the course rating and slope for these tees in ☰ Settings to see your score differential.</p>' : all.length < 18 ? '<p class="tiny muted">Play all 18 to get a score differential.</p>' : ''}
     <div class="row"><button class="btn grow" data-act="copyghin" data-id="${r.id}">Copy scores for GHIN</button><button class="btn primary grow" data-act="closemodal">Done</button></div>
     <p class="tiny muted">GHIN has no public way for other apps to post scores, so copy them here and enter them hole by hole in the GHIN app.</p>`);
   $('#modal').onclick = null;
@@ -606,15 +623,15 @@ function menu() {
     <div class="row spread" style="margin-top:8px"><span>Slope exaggeration</span><select class="clubsel" data-set="exaggerate">${[1, 1.5, 2, 3].map((v) => `<option value="${v}" ${v === s.exaggerate ? 'selected' : ''}>${v}×</option>`).join('')}</select></div>
     <label class="row spread" style="margin-top:8px"><span>Practice mode (place ball by hand)</span><input type="checkbox" data-set="simulateGps" ${s.simulateGps ? 'checked' : ''}/></label>
     <h3>Course rating &amp; slope</h3>
-    <p class="tiny muted">From the Cedar Crest scorecard or GHIN's course lookup. Used for your score differential.</p>
-    ${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<div class="row spread" style="margin-top:6px"><span style="text-transform:capitalize">${t} tees</span><span class="row"><input type="number" step="0.1" placeholder="Rating" style="width:76px" data-rating="${t}" data-k="rating" value="${S().settings.ratings[t]?.rating ?? ''}"/><input type="number" step="1" placeholder="Slope" style="width:66px" data-rating="${t}" data-k="slope" value="${S().settings.ratings[t]?.slope ?? ''}"/></span></div>`).join('')}
+    <p class="tiny muted">Pre-filled (grey) from the published scorecard: Black 71.7 / 133, Gold 69.3 / 128. Type your own if the card at the course differs.</p>
+    ${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<div class="row spread" style="margin-top:6px"><span>${teeName(t)} tees</span><span class="row"><input type="number" step="0.1" placeholder="${app.course.data.tees?.[t]?.rating ?? 'Rating'}" style="width:76px" data-rating="${t}" data-k="rating" value="${S().settings.ratings[t]?.rating ?? ''}"/><input type="number" step="1" placeholder="${app.course.data.tees?.[t]?.slope ?? 'Slope'}" style="width:66px" data-rating="${t}" data-k="slope" value="${S().settings.ratings[t]?.slope ?? ''}"/></span></div>`).join('')}
     <h3>Bag</h3>
     <table><tr><th>On</th><th style="text-align:left">Club</th><th>Yds</th><th>± yds</th><th>± °</th></tr>
     ${S().bag.map((c, i) => `<tr><td><input type="checkbox" data-bag="${i}" data-k="on" ${c.on ? 'checked' : ''}/></td><td style="text-align:left">${c.name}</td><td><input type="number" data-bag="${i}" data-k="yds" value="${c.yds}"/></td><td><input type="number" style="width:52px" data-bag="${i}" data-k="sdYds" value="${c.sdYds}"/></td><td><input type="number" style="width:52px" step="0.5" data-bag="${i}" data-k="sdDeg" value="${c.sdDeg}"/></td></tr>`).join('')}</table>
     <p class="tiny muted">"± yds" and "± °" are the typical spread for a 15 handicap; the advice tightens or widens them for your handicap. Once a club has 5+ recorded shots, your measured numbers are used instead.</p>
     <button class="btn sm" data-act="resetbag">Reset bag to defaults</button>
     <h3>Your data</h3>
-    <p class="small muted">Saved on this phone only. Export a backup now and then.</p>
+    <p class="small muted">Saved on this phone only. Last backup: ${S().settings.lastBackup ? new Date(S().settings.lastBackup!).toLocaleDateString() : 'never'}.</p>
     <div class="row wrap"><button class="btn" data-act="export">Export backup</button><button class="btn" data-act="import">Import backup</button><button class="btn danger" data-act="wipe">Erase everything</button></div>
     <h3>About</h3>
     <p class="tiny muted">Course map © OpenStreetMap contributors (ODbL), fetched ${app.course.data.fetched}. Elevation: USGS 3DEP. Trees: Meta &amp; WRI canopy height map (CC BY 4.0). Weather: Open-Meteo. Strokes-gained baseline adapted from Mark Broadie's tour data and scaled for your handicap (approximate).</p>
@@ -748,12 +765,13 @@ async function exportData() {
     // Inside a Claude artifact: plain downloads are blocked, so ask the viewer to save it.
     const downloads = await claude.use('downloads').catch(() => null);
     if (downloads) {
-      try { await downloads.save({ filename, data: json }); toast('Backup saved'); } catch { toast('Backup not saved'); }
+      try { await downloads.save({ filename, data: json }); S().settings.lastBackup = new Date().toISOString(); save(); toast('Backup saved'); } catch { toast('Backup not saved'); }
     } else {
       try { await navigator.clipboard.writeText(json); toast('Backup copied. Paste it into a note to keep it.'); } catch { toast('Saving backups isn\'t available here.'); }
     }
     return;
   }
+  S().settings.lastBackup = new Date().toISOString(); save();
   const blob = new Blob([json], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -906,6 +924,10 @@ function onClick(e: Event) {
         S().activeRoundId = null;
         if (!Object.keys(r.holes).length) S().rounds = S().rounds.filter((x) => x.id !== r.id);
         saveNow(S()); refreshBag(); app.tab = 'stats'; refresh();
+        const last = S().settings.lastBackup ? Date.parse(S().settings.lastBackup!) : 0;
+        if (S().rounds.length && Date.now() - last > 14 * 864e5) {
+          ask('Back up your rounds? They live only on this phone.', 'Export backup').then((yes) => { if (yes) void exportData(); });
+        }
       });
       break;
     case 'simnow': app.mode = { kind: 'sim' }; renderModebar(); break;
@@ -987,6 +1009,8 @@ async function boot() {
   app.scene.setExaggeration(S().settings.exaggerate);
   const hash = +location.hash.replace('#', '');
   if (hash >= 1 && hash <= 18) app.ref = hash;
+  setSaveErrorHandler(() => toast("Couldn't save. Your phone's storage may be full. Export a backup from ☰ now.", 6000, true));
+  if (recoveredFrom) setTimeout(() => toast("Your saved data couldn't be read, so a copy was kept and the app started fresh. Import a backup from ☰ if you have one.", 7000, true), 1500);
   document.addEventListener('click', onClick);
   document.addEventListener('change', onChange);
   document.addEventListener('input', (e) => {

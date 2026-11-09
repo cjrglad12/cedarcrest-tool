@@ -80,6 +80,7 @@ export interface Settings {
   measureHint: boolean;
   /** Course rating and slope per tee set, from the scorecard, for score differentials. */
   ratings: Partial<Record<TeeSet, { rating: number; slope: number }>>;
+  lastBackup: string | null;
 }
 
 export interface State {
@@ -98,7 +99,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {} },
+    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {}, lastBackup: null },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},
@@ -108,12 +109,21 @@ export function freshState(): State {
   };
 }
 
-export function loadState(storage: Pick<Storage, 'getItem'> = localStorage): State {
+/** Set when saved data couldn't be read; the unreadable copy is kept under this key. */
+export let recoveredFrom: string | null = null;
+
+export function loadState(storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage): State {
+  let raw: string | null = null;
   try {
-    const raw = storage.getItem(KEY);
+    raw = storage.getItem(KEY);
     if (!raw) return freshState();
     return migrate(JSON.parse(raw));
   } catch {
+    // Never throw away rounds: keep the unreadable copy before starting fresh.
+    if (raw) {
+      recoveredFrom = `${KEY}.unreadable-${Date.now()}`;
+      try { storage.setItem(recoveredFrom, raw); } catch { /* storage unavailable */ }
+    }
     return freshState();
   }
 }
@@ -123,16 +133,14 @@ export function migrate(s: Partial<State>): State {
   return { ...base, ...s, settings: { ...base.settings, ...(s.settings ?? {}) }, bag: s.bag?.length ? s.bag : base.bag } as State;
 }
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/** Called when the phone refuses to save (for example, storage is full). */
+export let onSaveError: (e: unknown) => void = (e) => console.error('save failed', e);
+export function setSaveErrorHandler(fn: (e: unknown) => void) { onSaveError = fn; }
+
+/** Save right away: the data is small, and a delayed save can be lost if the app is closed. */
 export function saveState(s: State, storage: Pick<Storage, 'setItem'> = localStorage) {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try { storage.setItem(KEY, JSON.stringify(s)); } catch (e) { console.error('save failed', e); }
-  }, 150);
+  try { storage.setItem(KEY, JSON.stringify(s)); } catch (e) { onSaveError(e); }
 }
-export function saveNow(s: State) {
-  if (saveTimer) clearTimeout(saveTimer);
-  localStorage.setItem(KEY, JSON.stringify(s));
-}
+export function saveNow(s: State) { saveState(s); }
 
 export const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
