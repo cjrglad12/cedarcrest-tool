@@ -1,10 +1,10 @@
 import './styles.css';
-import { bestFix } from './gps';
+import { bestFix, fmtHcp, parseHcp } from './gps';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
 import { Conditions, fetchConditions, windComponents, playsLike, compass } from './conditions';
 import { suggest, buildPlan, evaluate, Option, Ctx } from './advice';
-import { analyzeRound, analyzeHole, clubStats, effectiveBag, holeHistory, ClubStat } from './stats';
+import { analyzeRound, analyzeHole, clubStats, effectiveBag, holeHistory, ClubStat, scoringStats, differential } from './stats';
 import { CATEGORY_LABEL, Category } from './sg';
 import { loadState, saveState, saveNow, migrate, uid, freshState, State, Round, HoleRec, HolePlan, TeeSet, Club, DEFAULT_BAG } from './store';
 
@@ -105,6 +105,13 @@ function renderTop() {
 
 function renderHint() {
   document.querySelector('.hint')?.remove();
+  if (app.scene?.currentView === 'green' && !app.mode) {
+    const el = document.createElement('div');
+    el.className = 'hint legend';
+    el.innerHTML = 'Arrows point downhill · <i style="color:#7fd1ff">■</i> flat <i style="color:#ffe066">■</i> 1–2% <i style="color:#ff9f43">■</i> 2–3% <i style="color:#ff5a4f">■</i> 3%+';
+    $('#view').appendChild(el);
+    return;
+  }
   if (app.tab !== 'plan' || app.mode || !S().settings.measureHint || app.measure) return;
   const el = document.createElement('div');
   el.className = 'hint';
@@ -117,7 +124,8 @@ function welcome() {
   const draw = () => {
     modal(`<h2>Welcome to Cedar Crest</h2>
       <p class="small muted">Three quick questions so the yardages and advice fit your game. You can change them later in ☰.</p>
-      <div class="row spread" style="margin-top:12px"><span>Your handicap</span><div class="stepper"><button data-w="hcp" data-d="-1" aria-label="Lower handicap">−</button><b>${hcp}</b><button data-w="hcp" data-d="1" aria-label="Higher handicap">+</button></div></div>
+      <div class="row spread" style="margin-top:12px"><label for="w-hcp">Handicap index</label><input id="w-hcp" class="hcp-in" inputmode="decimal" autocomplete="off" value="${fmtHcp(hcp)}" placeholder="12.4 or +2.1"/></div>
+      <div class="tiny muted" style="text-align:right">Use + for a plus handicap, e.g. +2.1</div>
       <div class="row spread" style="margin-top:12px"><span>Driver distance</span><div class="stepper"><button data-w="drv" data-d="-5" aria-label="Shorter">−</button><b>${drv}</b><button data-w="drv" data-d="5" aria-label="Longer">+</button></div></div>
       <div class="small muted" style="margin:12px 0 6px">Tees you usually play</div>
       <div class="seg">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<button class="${t === tees ? 'on' : ''}" data-w="tees" data-v="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>
@@ -126,10 +134,12 @@ function welcome() {
       const b = (e.target as HTMLElement).closest('[data-w]') as HTMLElement | null;
       if (!b) return;
       const w = b.dataset.w;
-      if (w === 'hcp') hcp = Math.max(0, Math.min(40, hcp + +b.dataset.d!));
+      const typed = parseHcp(($('#w-hcp') as HTMLInputElement).value);
+      if (typed !== null) hcp = typed;
       if (w === 'drv') drv = Math.max(150, Math.min(330, drv + +b.dataset.d!));
       if (w === 'tees') tees = b.dataset.v as TeeSet;
       if (w === 'go') {
+        if (typed === null) { toast('Enter your handicap like 12.4, or +2.1 for a plus handicap'); return; }
         const base = S().bag.find((c) => c.name === 'Driver')?.yds ?? 230;
         const k = drv / base;
         S().bag = S().bag.map((c) => ({ ...c, yds: Math.round(c.yds * k) }));
@@ -311,6 +321,13 @@ function renderOptions(): string {
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 // ---------------- Play tab ----------------
+/** Bunkers and water between you and the green: yards to reach and to carry. */
+function carriesHtml(from: XY, pinXY: XY) {
+  const hz = app.course.hazards(hole(), from, pinXY).slice(0, 4);
+  if (!hz.length) return '';
+  return `<div class="carries">${hz.map((z) => `<span>${z.kind === 'water' ? '💧' : '⛱'} ${z.side === 'center' ? '' : z.side === 'left' ? 'L ' : 'R '}<b>${y0(z.reach)}</b>/<b>${y0(z.carry)}</b></span>`).join('')}<span class="muted">reach/carry</span></div>`;
+}
+
 function newHoleRec(r: Round): HoleRec {
   const quick = r.trackShots === false;
   return { ref: app.ref, teeId: tee().id, pin: S().pins[app.ref] ?? hole().pin, shots: [], greenMark: null, putts: quick ? 2 : 0, holedFromOff: false, followedPlan: null, done: false, quick, strokes: quick ? hole().par : undefined, fairway: null };
@@ -370,12 +387,15 @@ function renderPlay(): string {
     const strokes = rec.strokes ?? h.par;
     return `${distances}
       <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="chip">${pl.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(pl.riseFt)} ft</span><button class="btn sm" data-act="playopts">What should I hit?</button></div>
+      ${carriesHtml(from, rec.pin)}
       ${app.options ? renderOptions() : ''}
       <div class="scorebox">
         <div><div class="small muted">Score</div><div class="stepper big"><button data-act="qs" data-d="-1" aria-label="One less stroke">−</button><b>${strokes}</b><button data-act="qs" data-d="1" aria-label="One more stroke">+</button></div><div class="tiny muted">${strokes - h.par === 0 ? 'Par' : toPar(strokes - h.par)}</div></div>
         <div><div class="small muted">Putts</div><div class="stepper big"><button data-act="putt" data-d="-1" aria-label="One less putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="One more putt">+</button></div></div>
       </div>
       ${h.par >= 4 ? `<div class="small muted" style="margin-top:10px">Tee shot</div><div class="seg">${(['left', 'hit', 'right'] as const).map((v) => `<button class="${rec!.fairway === v ? 'on' : ''}" data-act="fw" data-v="${v}">${{ left: '← Left', hit: 'Fairway', right: 'Right →' }[v]}</button>`).join('')}</div>` : ''}
+      ${strokes - rec.putts > h.par - 2 ? `<div class="small muted" style="margin-top:10px">Missed the green</div><div class="seg">${(['short', 'long', 'left', 'right'] as const).map((v) => `<button class="${rec!.missedGreen === v ? 'on' : ''}" data-act="mg" data-v="${v}">${{ short: 'Short', long: 'Long', left: 'Left', right: 'Right' }[v]}</button>`).join('')}</div>` : '<div class="small gain" style="margin-top:10px">Green in regulation</div>'}
+      <div class="row spread" style="margin-top:10px"><span class="small muted">Penalty strokes (included in score)</span><div class="stepper"><button data-act="pens" data-d="-1" aria-label="One less penalty">−</button><b>${rec.penalties ?? 0}</b><button data-act="pens" data-d="1" aria-label="One more penalty">+</button></div></div>
       <button class="btn primary wide" style="margin-top:12px" data-act="savehole">Save hole ${h.ref} ›</button>
       <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="trackmode">Track shots on this hole</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="roundpin">Set today's pin</button></div>
       ${roundFooter()}`;
@@ -390,6 +410,7 @@ function renderPlay(): string {
     <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="chip">${pl.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(pl.riseFt)} ft</span>
       ${planned ? `<span class="chip">Plan: ${planned.club} → ${y0(dist(from, planned.target))}</span>` : ''}
       <button class="btn sm" data-act="playopts">What should I hit?</button></div>
+    ${carriesHtml(from, rec.pin)}
     ${app.options ? renderOptions() : ''}
     ${rec.shots.length ? `<ul class="list">${shotRows}</ul>` : '<p class="small muted" style="margin:4px 0">Stand at your ball and tap <b>Mark shot</b> before each swing.</p>'}
     <div class="row" style="margin-top:6px">
@@ -402,6 +423,15 @@ function renderPlay(): string {
     </div>
     <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="quick">Just enter my score</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="roundpin">Set today's pin</button><button class="btn sm" data-act="simnow">Place ball by hand</button></div>
     ${roundFooter()}`;
+}
+
+function copyForGhin(roundId?: string) {
+  const r = (roundId ? S().rounds.find((x) => x.id === roundId) : round()) ?? null;
+  if (!r) return;
+  const views = analyzeRound(app.course, r, S().settings.handicap).holes;
+  const line = (v: (typeof views)[number]) => `${v.ref}: ${v.score} (${v.putts} putt${v.putts === 1 ? '' : 's'}${v.fairway === null ? '' : v.fairway ? ', FIR' : `, missed ${v.fairwayMiss ?? 'fairway'}`}${v.gir ? ', GIR' : ''}${v.penalties ? `, ${v.penalties} pen` : ''})`;
+  const text = [`Cedar Crest · ${new Date(r.date).toLocaleDateString()} · ${r.teeSet} tees`, ...views.map(line), `Total ${views.reduce((a, v) => a + v.score, 0)} over ${views.length} holes`].join('\n');
+  navigator.clipboard.writeText(text).then(() => toast('Copied. Paste into notes, then enter in GHIN.'), () => toast("Couldn't copy here. Take a screenshot of the scorecard instead."));
 }
 
 /** Hole-by-hole card for a round, with front and back nine totals. */
@@ -428,10 +458,15 @@ function scorecard(roundId?: string) {
   };
   const all = [...views.values()];
   const total = all.reduce((a, v) => a + v.score, 0), par = all.reduce((a, v) => a + v.par, 0);
-  modal(`<h2>Scorecard · ${new Date(r.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</h2>
+  const rr = S().settings.ratings[r.teeSet];
+  const rs = rr && rr.rating > 50 && rr.slope >= 55 && rr.slope <= 155 ? rr : null;
+  const diff = rs && all.length === 18 ? differential(total, rs.rating, rs.slope) : null;
+  modal(`<h2>Scorecard · ${new Date(r.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · ${r.teeSet} tees</h2>
     <div class="scroll-x">${nine(1)}</div><div class="scroll-x" style="margin-top:8px">${nine(10)}</div>
     <p><b>${all.length ? total : '–'}</b> ${all.length ? `(${total - par === 0 ? 'E' : sgn(total - par, 0)}) over ${all.length} holes` : ''}</p>
-    <button class="btn primary wide" data-act="closemodal">Done</button>`);
+    ${diff !== null ? `<p class="small">Score differential <b>${diff.toFixed(1)}</b> <span class="muted">(${rs!.rating} / ${rs!.slope}, from your gross score; GHIN caps each hole at net double bogey, which can lower it)</span></p>` : all.length === 18 && !rs ? '<p class="tiny muted">Add the course rating and slope for these tees in ☰ Settings to see your score differential.</p>' : ''}
+    <div class="row"><button class="btn grow" data-act="copyghin" data-id="${r.id}">Copy scores for GHIN</button><button class="btn primary grow" data-act="closemodal">Done</button></div>
+    <p class="tiny muted">GHIN has no public way for other apps to post scores, so copy them here and enter them hole by hole in the GHIN app.</p>`);
   $('#modal').onclick = null;
 }
 
@@ -449,7 +484,9 @@ function renderStats(): string {
     return `<p class="muted">No rounds yet. Play a round from the Play tab and your strokes gained, hole history and club distances will show up here.</p>${clubsTable()}`;
   }
   const last5 = rounds.slice(-5);
-  const avg = (k: Category) => last5.reduce((s, v) => s + (v.sg[k] / v.holes.length) * 18, 0) / last5.length;
+  // Strokes gained only means something on holes where shots were tracked.
+  const tracked = last5.flatMap((v) => v.holes).filter((x) => x.shots.length > 0);
+  const avg = (k: Category) => (tracked.length ? (tracked.reduce((s, x) => s + x.sg[k], 0) / tracked.length) * 18 : 0);
   const cats = Object.keys(CATEGORY_LABEL) as Category[];
   const maxAbs = Math.max(2, ...cats.map((k) => Math.abs(avg(k))));
   const sgRows = cats.map((k) => {
@@ -465,9 +502,26 @@ function renderStats(): string {
   const avgScore = (xs: typeof hist) => xs.reduce((s, x) => s + x.view.score, 0) / xs.length;
   return `
     <h3>Strokes gained · per 18 holes</h3>
-    <div class="small muted">Last ${last5.length} round${last5.length > 1 ? 's' : ''}, compared with a typical ${hcp}-handicap (approximate).</div>
+    ${tracked.length ? `<div class="small muted">From ${tracked.length} tracked hole${tracked.length > 1 ? 's' : ''} in your last ${last5.length} round${last5.length > 1 ? 's' : ''}, compared with a typical ${fmtHcp(hcp)} handicap (approximate).</div>
     ${sgRows}
-    <div class="card small">Biggest opportunity: <b>${CATEGORY_LABEL[worst]}</b>.</div>
+    <div class="card small">Biggest opportunity: <b>${CATEGORY_LABEL[worst]}</b>.</div>` : '<div class="card small">Strokes gained needs shot tracking. Choose <b>Track shots</b> when you start a round (or on any hole), and this fills in. Quick-scored holes still count in the scoring stats below.</div>'}
+
+    ${(() => {
+      const st = scoringStats(rounds.slice(-5).flatMap((v) => v.holes));
+      const pc = (x: number | null) => (x === null ? '–' : `${Math.round(x * 100)}%`);
+      const mg = st.missedGreen;
+      const nr = Math.min(5, rounds.length);
+      return `<h3>Scoring · ${nr === 1 ? 'last round' : `last ${nr} rounds`}</h3>
+      <div class="statgrid">
+        <div><b>${pc(st.fairwayPct)}</b><span>Fairways${st.fairwayLeft + st.fairwayRight ? ` · miss ${st.fairwayLeft}L/${st.fairwayRight}R` : ''}</span></div>
+        <div><b>${pc(st.girPct)}</b><span>Greens in reg.</span></div>
+        <div><b>${pc(st.scramblePct)}</b><span>Up &amp; down</span></div>
+        <div><b>${st.puttsPer18.toFixed(1)}</b><span>Putts / 18</span></div>
+        <div><b>${st.puttsPerGir === null ? '–' : st.puttsPerGir.toFixed(2)}</b><span>Putts per GIR</span></div>
+        <div><b>${st.penaltiesPer18.toFixed(1)}</b><span>Penalties / 18</span></div>
+      </div>
+      ${mg.short + mg.long + mg.left + mg.right ? `<div class="small muted">Missed greens: ${mg.short} short · ${mg.long} long · ${mg.left} left · ${mg.right} right</div>` : ''}`;
+    })()}
 
     <h3>Rounds</h3>
     <table><tr><th>Date</th><th>Score</th><th>Putts</th><th>FW</th><th>GIR</th></tr>
@@ -547,14 +601,17 @@ function clubPicker(suggested: string | undefined, onPick: (c: string) => void) 
 function menu() {
   const s = S().settings;
   modal(`<h2>Settings</h2>
-    <div class="row spread"><span>Handicap</span><input type="number" step="1" min="-5" max="40" value="${s.handicap}" data-set="handicap"/></div>
+    <div class="row spread"><span>Handicap</span><input class="hcp-in" inputmode="decimal" autocomplete="off" value="${fmtHcp(s.handicap)}" data-set="handicap" aria-label="Handicap index"/></div>
     <div class="row spread" style="margin-top:8px"><span>Default tees</span><select class="clubsel" data-set="teeSet">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<option ${t === s.teeSet ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
     <div class="row spread" style="margin-top:8px"><span>Slope exaggeration</span><select class="clubsel" data-set="exaggerate">${[1, 1.5, 2, 3].map((v) => `<option value="${v}" ${v === s.exaggerate ? 'selected' : ''}>${v}×</option>`).join('')}</select></div>
     <label class="row spread" style="margin-top:8px"><span>Practice mode (place ball by hand)</span><input type="checkbox" data-set="simulateGps" ${s.simulateGps ? 'checked' : ''}/></label>
+    <h3>Course rating &amp; slope</h3>
+    <p class="tiny muted">From the Cedar Crest scorecard or GHIN's course lookup. Used for your score differential.</p>
+    ${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<div class="row spread" style="margin-top:6px"><span style="text-transform:capitalize">${t} tees</span><span class="row"><input type="number" step="0.1" placeholder="Rating" style="width:76px" data-rating="${t}" data-k="rating" value="${S().settings.ratings[t]?.rating ?? ''}"/><input type="number" step="1" placeholder="Slope" style="width:66px" data-rating="${t}" data-k="slope" value="${S().settings.ratings[t]?.slope ?? ''}"/></span></div>`).join('')}
     <h3>Bag</h3>
     <table><tr><th>On</th><th style="text-align:left">Club</th><th>Yds</th><th>± yds</th><th>± °</th></tr>
     ${S().bag.map((c, i) => `<tr><td><input type="checkbox" data-bag="${i}" data-k="on" ${c.on ? 'checked' : ''}/></td><td style="text-align:left">${c.name}</td><td><input type="number" data-bag="${i}" data-k="yds" value="${c.yds}"/></td><td><input type="number" style="width:52px" data-bag="${i}" data-k="sdYds" value="${c.sdYds}"/></td><td><input type="number" style="width:52px" step="0.5" data-bag="${i}" data-k="sdDeg" value="${c.sdDeg}"/></td></tr>`).join('')}</table>
-    <p class="tiny muted">"± yds" and "± °" are your typical distance and left/right spread. Once a club has 5+ recorded shots, your measured numbers are used instead.</p>
+    <p class="tiny muted">"± yds" and "± °" are the typical spread for a 15 handicap; the advice tightens or widens them for your handicap. Once a club has 5+ recorded shots, your measured numbers are used instead.</p>
     <button class="btn sm" data-act="resetbag">Reset bag to defaults</button>
     <h3>Your data</h3>
     <p class="small muted">Saved on this phone only. Export a backup now and then.</p>
@@ -768,6 +825,7 @@ function onClick(e: Event) {
     app.scene.view(el.dataset.view as ViewName);
     if (el.dataset.view === 'course') toast('Tap a hole to jump to it');
     renderTop();
+    renderHint();
     return;
   }
   const i = +(el.dataset.i ?? -1);
@@ -826,6 +884,9 @@ function onClick(e: Event) {
     case 'trackshots': S().settings.trackShots = el.dataset.v === '1'; save(); renderPanel(); break;
     case 'scorecard': scorecard(el.dataset.id); break;
     case 'qs': if (rec) { rec.strokes = Math.max(1, Math.min(15, (rec.strokes ?? hole().par) + +el.dataset.d!)); if (rec.putts > rec.strokes) rec.putts = rec.strokes; save(); renderPanel(); } break;
+    case 'mg': if (rec) { rec.missedGreen = rec.missedGreen === el.dataset.v ? null : (el.dataset.v as HoleRec['missedGreen']); save(); renderPanel(); } break;
+    case 'pens': if (rec) { rec.penalties = Math.max(0, Math.min(6, (rec.penalties ?? 0) + +el.dataset.d!)); save(); renderPanel(); } break;
+    case 'copyghin': copyForGhin(el.dataset.id); break;
     case 'fw': if (rec) { rec.fairway = rec.fairway === el.dataset.v ? null : (el.dataset.v as HoleRec['fairway']); save(); renderPanel(); } break;
     case 'quick': if (rec) { rec.quick = true; rec.strokes = rec.strokes ?? Math.max(hole().par, rec.shots.length + rec.putts); if (!rec.putts) rec.putts = 2; save(); app.options = null; refresh(); } break;
     case 'trackmode': if (rec) { rec.quick = false; save(); startGps(); refresh(); } break;
@@ -881,12 +942,26 @@ function onChange(e: Event) {
   if (el.dataset.act === 'usemine') { S().settings.useMyNumbers = el.checked; save(); refreshBag(); return; }
   if (el.dataset.set) {
     const k = el.dataset.set as keyof State['settings'];
-    const v = el.type === 'checkbox' ? el.checked : k === 'teeSet' ? el.value : +el.value;
+    let v: unknown = el.type === 'checkbox' ? el.checked : k === 'teeSet' ? el.value : +el.value;
+    if (k === 'handicap') {
+      const h = parseHcp(el.value);
+      if (h === null) { toast('Enter your handicap like 12.4, or +2.1 for a plus handicap'); el.value = fmtHcp(S().settings.handicap); return; }
+      v = h;
+    }
     (S().settings as any)[k] = v;
     save();
     if (k === 'exaggerate') app.scene.setExaggeration(v as number);
     if (k === 'simulateGps' && !v) app.sim = null;
     refresh();
+    return;
+  }
+  if (el.dataset.rating) {
+    const t = el.dataset.rating as TeeSet;
+    const cur = { ...(S().settings.ratings[t] ?? { rating: 0, slope: 0 }) };
+    (cur as any)[el.dataset.k!] = +el.value;
+    if (!cur.rating && !cur.slope) delete S().settings.ratings[t];
+    else S().settings.ratings[t] = cur;
+    save();
     return;
   }
   if (el.dataset.bag) {

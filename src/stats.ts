@@ -30,6 +30,9 @@ export interface HoleView {
   fairway: boolean | null; // null on par 3s
   gir: boolean;
   followedPlan: boolean | null;
+  penalties: number;
+  fairwayMiss: 'left' | 'right' | null;
+  missedGreen: 'short' | 'long' | 'left' | 'right' | null;
 }
 
 const ASSUMED_FIRST_PUTT_FT = 25;
@@ -44,6 +47,9 @@ export function analyzeHole(course: Course, rec: HoleRec, handicap: number): Hol
       ref: rec.ref, par: hole.par, score, putts: rec.putts, firstPuttFt: null, firstPuttEstimated: false, shots: [], sg: emptySg(),
       fairway: hole.par >= 4 && rec.fairway ? rec.fairway === 'hit' : null,
       gir: score - rec.putts <= hole.par - 2, followedPlan: rec.followedPlan,
+      penalties: rec.penalties ?? 0,
+      fairwayMiss: rec.fairway === 'left' || rec.fairway === 'right' ? rec.fairway : null,
+      missedGreen: score - rec.putts <= hole.par - 2 ? null : rec.missedGreen ?? null,
     };
   }
   const pin = rec.pin;
@@ -108,7 +114,37 @@ export function analyzeHole(course: Course, rec: HoleRec, handicap: number): Hol
     fairway: hole.par >= 4 && rec.fairway ? rec.fairway === 'hit' : hole.par >= 4 && tee ? shots[0]?.endLie === 'fairway' : null,
     gir: reachedGreenAt !== null ? reachedGreenAt <= hole.par - 2 : holedOut && strokes <= hole.par - 2,
     followedPlan: rec.followedPlan,
+    penalties: rec.shots.reduce((a, s) => a + s.penalty, 0),
+    fairwayMiss: rec.fairway === 'left' || rec.fairway === 'right' ? rec.fairway : null,
+    missedGreen: rec.missedGreen ?? null,
   };
+}
+
+/** GHIN-style scoring stats across rounds (per 18 where it's a count). */
+export function scoringStats(views: HoleView[]) {
+  const n = views.length;
+  const fw = views.filter((h) => h.fairway !== null);
+  const gir = views.filter((h) => h.gir);
+  const missed = views.filter((h) => !h.gir);
+  const scrambled = missed.filter((h) => h.score <= h.par);
+  const per18 = (x: number) => (n ? (x / n) * 18 : 0);
+  return {
+    holes: n,
+    fairwayPct: fw.length ? fw.filter((h) => h.fairway).length / fw.length : null,
+    fairwayLeft: fw.filter((h) => h.fairwayMiss === 'left').length,
+    fairwayRight: fw.filter((h) => h.fairwayMiss === 'right').length,
+    girPct: n ? gir.length / n : null,
+    puttsPer18: per18(views.reduce((a, h) => a + h.putts, 0)),
+    puttsPerGir: gir.length ? gir.reduce((a, h) => a + h.putts, 0) / gir.length : null,
+    scramblePct: missed.length ? scrambled.length / missed.length : null,
+    penaltiesPer18: per18(views.reduce((a, h) => a + h.penalties, 0)),
+    missedGreen: { short: missed.filter((h) => h.missedGreen === 'short').length, long: missed.filter((h) => h.missedGreen === 'long').length, left: missed.filter((h) => h.missedGreen === 'left').length, right: missed.filter((h) => h.missedGreen === 'right').length },
+  };
+}
+
+/** USGA score differential: (113 / slope) × (adjusted gross score − course rating). */
+export function differential(adjustedGross: number, rating: number, slope: number) {
+  return Math.round(((113 / slope) * (adjustedGross - rating)) * 10) / 10;
 }
 
 export interface RoundView {
@@ -174,11 +210,20 @@ export function clubStats(course: Course, state: State): ClubStat[] {
 }
 
 /** The bag used for advice: your measured numbers once a club has at least 5 clean shots. */
+/**
+ * How wide misses are compared with the default bag (set for a ~15 handicap):
+ * about 60% as wide for scratch, a little tighter still for plus handicaps.
+ */
+export function spreadFactor(handicap: number) {
+  return Math.max(0.5, Math.min(1.5, 0.6 + handicap * 0.027));
+}
+
 export function effectiveBag(state: State, stats: ClubStat[]): Club[] {
-  if (!state.settings.useMyNumbers) return state.bag;
+  const k = spreadFactor(state.settings.handicap);
+  const typical = (c: Club): Club => ({ ...c, sdYds: Math.round(c.sdYds * k * 10) / 10, sdDeg: Math.round(c.sdDeg * k * 10) / 10 });
   return state.bag.map((c) => {
     const s = stats.find((x) => x.club === c.name);
-    if (!s || s.n < 5) return c;
+    if (!state.settings.useMyNumbers || !s || s.n < 5) return typical(c);
     return { ...c, yds: Math.round(s.median), sdYds: Math.max(4, Math.round(s.sd)), sdDeg: s.sdDeg !== null && s.nLat >= 5 ? Math.max(2, +s.sdDeg.toFixed(1)) : c.sdDeg };
   });
 }

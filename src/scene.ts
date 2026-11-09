@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { Course, Hole, XY, Feature, dist, bearing, YD, TREE_M } from './course';
+import { Course, Hole, XY, Feature, dist, bearing, YD, TREE_M, pointInFeature } from './course';
 
 export interface Arc { from: XY; to: XY; color: string; label?: string; dashed?: boolean; width?: number }
 export interface Ellipse { center: XY; along: number; across: number; bearing: number; color: string }
@@ -72,7 +72,7 @@ export class HoleScene {
     sun.position.set(-300, 420, 200);
     this.scene.add(sun);
     this.scene.add(this.group);
-    this.group.add(this.overlay, this.me, this.pinObj, this.teeObj, this.landmarks, this.windGroup);
+    this.group.add(this.overlay, this.me, this.pinObj, this.teeObj, this.landmarks, this.windGroup, this.greenSlope);
     this.landmarks.add(this.courseOnly);
     this.buildMarkers();
 
@@ -350,6 +350,44 @@ export class HoleScene {
   }
 
   private holeLine: THREE.Line | null = null;
+  private greenSlope = new THREE.Group();
+
+  /**
+   * Slope arrows on the green, every 2.5 m: they point downhill and are colored by
+   * steepness (from the 2 m elevation grid, so they show the general tilt and tiers,
+   * not every small break).
+   */
+  private buildGreenSlope() {
+    for (const o of [...this.greenSlope.children]) { this.greenSlope.remove(o); (o as THREE.Mesh).geometry?.dispose(); }
+    const g = this.hole && this.course.greenOf(this.hole);
+    if (!g) return;
+    const ring = g.rings[0];
+    const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+    const pts: { p: XY; dx: number; dy: number; pct: number }[] = [];
+    const H = (x: number, y: number) => this.course.height(x, y);
+    const step = 2.5, e = 2;
+    for (let y = Math.min(...ys) + 1; y < Math.max(...ys); y += step) for (let x = Math.min(...xs) + 1; x < Math.max(...xs); x += step) {
+      if (!pointInFeature([x, y], g)) continue;
+      const gx = (H(x + e, y) - H(x - e, y)) / (2 * e), gy = (H(x, y + e) - H(x, y - e)) / (2 * e);
+      const m = Math.hypot(gx, gy);
+      pts.push({ p: [x, y], dx: -gx / (m || 1), dy: -gy / (m || 1), pct: m * 100 });
+    }
+    if (!pts.length) return;
+    const shape = new THREE.Shape([[-0.22, -0.7], [0.22, -0.7], [0.22, 0.15], [0.6, 0.15], [0, 0.85], [-0.6, 0.15], [-0.22, 0.15]].map(([a, b]) => new THREE.Vector2(a, b)));
+    const geo = new THREE.ShapeGeometry(shape);
+    geo.rotateX(-Math.PI / 2);
+    const mesh = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, depthWrite: false, transparent: true, opacity: 0.95 }), pts.length);
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), c = new THREE.Color(), up = new THREE.Vector3(0, 1, 0);
+    pts.forEach(({ p, dx, dy, pct }, i) => {
+      q.setFromAxisAngle(up, Math.atan2(-dx, dy));
+      const s = 0.7 + Math.min(1, pct / 3) * 0.6;
+      m4.compose(this.v3(p, 0.35), q, new THREE.Vector3(s, s, s));
+      mesh.setMatrixAt(i, m4);
+      mesh.setColorAt(i, c.set(slopeColor(pct)));
+    });
+    mesh.renderOrder = 7;
+    this.greenSlope.add(mesh);
+  }
   private pinIcon: THREE.Sprite | null = null;
   private teeIcon: THREE.Sprite | null = null;
 
@@ -375,6 +413,8 @@ export class HoleScene {
       this.group.add(this.holeLine);
     }
     this.group.add(this.pinIcon, this.teeIcon);
+    this.buildGreenSlope();
+    this.greenSlope.visible = this.currentView === 'green';
     this.sizeLabels();
   }
 
@@ -552,9 +592,13 @@ export class HoleScene {
       this.camera.position.copy(mid).add(new THREE.Vector3(0, h * 0.95, 0)).addScaledVector(dir, -h * 0.3);
       this.controls.target.copy(mid);
     } else {
-      this.camera.position.copy(pinW).addScaledVector(dir, -55).add(new THREE.Vector3(0, 26, 0));
-      this.controls.target.copy(pinW);
+      // Look down onto the green from above the approach, clear of trees.
+      const g = this.course.greenOf(this.hole);
+      const c = g ? toLocal(this.v3(centroidOf(g.rings[0]))) : pinW;
+      this.camera.position.copy(c).addScaledVector(dir, -24).add(new THREE.Vector3(0, 52, 0));
+      this.controls.target.copy(c);
     }
+    this.greenSlope.visible = name === 'green';
     this.controls.update();
     this.sizeLabels();
     this.render();
@@ -756,6 +800,11 @@ export function dispersion(club: { yds: number; sdYds: number; sdDeg: number }) 
   // ~80% of shots land inside 1.3 standard deviations in each direction
   const k = 1.3;
   return { along: club.sdYds * YD * k, across: Math.tan((club.sdDeg * Math.PI) / 180) * club.yds * YD * k };
+}
+
+/** Green slope color: under 1% flat, then gentle, firm and severe. */
+export function slopeColor(pct: number) {
+  return pct < 1 ? '#7fd1ff' : pct < 2 ? '#ffe066' : pct < 3 ? '#ff9f43' : '#ff5a4f';
 }
 
 /** Round map pin for the flag or the tee, drawn at a fixed size on screen. */

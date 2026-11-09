@@ -15,3 +15,19 @@ export function bestFix(fixes: { xy: XY; acc: number; at: number }[]) {
   // Averaging n independent readings shrinks the error by about √n.
   return { xy: [x / w, y / w] as XY, acc: best / Math.sqrt(good.length), at: Math.max(...good.map((f) => f.at)) };
 }
+
+/** Handicap index as golfers write it: plus handicaps (better than scratch) show as "+2.1". */
+export function fmtHcp(h: number): string {
+  const v = Math.round(Math.abs(h) * 10) / 10;
+  return (h < 0 ? '+' : '') + (Number.isInteger(v) ? String(v) : v.toFixed(1));
+}
+
+/** Parse "12.4", "+2.1" or "-2.1" (both mean plus 2.1). Returns null if it isn't a handicap. */
+export function parseHcp(text: string): number | null {
+  const t = text.trim().replace(',', '.');
+  const m = /^([+-]?)(\d{1,2}(?:\.\d)?)$/.exec(t);
+  if (!m) return null;
+  const v = parseFloat(m[2]);
+  if (v > 54) return null;
+  return m[1] ? -v : v;
+}

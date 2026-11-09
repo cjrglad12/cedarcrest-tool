@@ -52,6 +52,8 @@ export interface HoleRec {
   strokes?: number;
   quick?: boolean;
   fairway?: 'left' | 'hit' | 'right' | null;
+  penalties?: number; // quick scoring: penalty strokes (already in the score)
+  missedGreen?: 'short' | 'long' | 'left' | 'right' | null;
 }
 
 export interface Round {
@@ -76,6 +78,8 @@ export interface Settings {
   onboarded: boolean;
   trackShots: boolean;
   measureHint: boolean;
+  /** Course rating and slope per tee set, from the scorecard, for score differentials. */
+  ratings: Partial<Record<TeeSet, { rating: number; slope: number }>>;
 }
 
 export interface State {
@@ -94,7 +98,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true },
+    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {} },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},

@@ -36,7 +36,7 @@ export function tourExpected(yds: number, lie: Lie): number {
 /** Scale the tour baseline toward a handicap golfer. ~+16 strokes per round at 15 handicap. */
 export function expected(yds: number, lie: Lie, handicap: number): number {
   const e = tourExpected(yds, lie);
-  return 1 + (e - 1) * (1 + 0.02 * Math.max(-5, handicap));
+  return 1 + (e - 1) * (1 + 0.02 * Math.max(-8, handicap));
 }
 
 export type Category = 'ott' | 'app' | 'arg' | 'putt';

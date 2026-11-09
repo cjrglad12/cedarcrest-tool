@@ -6,7 +6,8 @@ import { carryFactor, windComponents, playsLike, CALM } from '../src/conditions'
 import { suggest, buildPlan } from '../src/advice';
 import { analyzeHole, clubStats, effectiveBag } from '../src/stats';
 import { freshState, migrate, DEFAULT_BAG, HoleRec } from '../src/store';
-import { bestFix } from '../src/gps';
+import { bestFix, fmtHcp, parseHcp } from '../src/gps';
+import { differential, spreadFactor, scoringStats } from '../src/stats';
 
 const data: CourseData = JSON.parse(readFileSync(new URL('../public/data/course.json', import.meta.url), 'utf8'));
 const raw = readFileSync(new URL('../public/data/terrain.bin', import.meta.url));
@@ -218,5 +219,33 @@ describe('gps', () => {
     expect(f.xy[0]).toBeCloseTo(1, 5);
     expect(f.xy[1]).toBeCloseTo(0, 5);
     expect(f.acc).toBeCloseTo(4 / Math.sqrt(2), 5);
+  });
+});
+
+describe('handicaps and posting', () => {
+  it('reads and writes plus and decimal handicaps', () => {
+    expect(parseHcp('12.4')).toBe(12.4);
+    expect(parseHcp('+2.1')).toBe(-2.1);
+    expect(parseHcp('-2.1')).toBe(-2.1);
+    expect(parseHcp('abc')).toBeNull();
+    expect(fmtHcp(-2.1)).toBe('+2.1');
+    expect(fmtHcp(15)).toBe('15');
+  });
+  it('computes a USGA score differential', () => {
+    expect(differential(85, 70.1, 125)).toBe(13.5);
+  });
+  it('tightens the default spread for better players', () => {
+    expect(spreadFactor(0)).toBeLessThan(spreadFactor(15));
+    expect(spreadFactor(-4)).toBeGreaterThanOrEqual(0.5);
+  });
+  it('counts scrambling and putts per GIR', () => {
+    const base = { shots: [], sg: { ott: 0, app: 0, arg: 0, putt: 0 }, firstPuttFt: null, firstPuttEstimated: false, followedPlan: null, fairway: null, fairwayMiss: null, missedGreen: null, penalties: 0 };
+    const st = scoringStats([
+      { ...base, ref: 1, par: 4, score: 4, putts: 2, gir: true },
+      { ...base, ref: 2, par: 4, score: 4, putts: 1, gir: false },
+      { ...base, ref: 3, par: 4, score: 5, putts: 2, gir: false },
+    ]);
+    expect(st.scramblePct).toBeCloseTo(0.5);
+    expect(st.puttsPerGir).toBe(2);
   });
 });
