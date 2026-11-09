@@ -394,6 +394,19 @@ function modal(html: string) {
 }
 function closeModal() { $('#modal').hidden = true; $('#modal').innerHTML = ''; }
 
+/** In-page yes/no question (browser pop-ups don't work everywhere, e.g. inside Claude). */
+function ask(question: string, yes: string, danger = false): Promise<boolean> {
+  return new Promise((resolve) => {
+    modal(`<h2>${esc(question)}</h2><div class="row" style="margin-top:12px"><button class="btn grow" data-ans="no">Cancel</button><button class="btn grow ${danger ? 'danger' : 'primary'}" data-ans="yes">${esc(yes)}</button></div>`);
+    $('#modal').onclick = (e) => {
+      const b = (e.target as HTMLElement).closest('[data-ans]') as HTMLElement | null;
+      if (!b) return;
+      closeModal();
+      resolve(b.dataset.ans === 'yes');
+    };
+  });
+}
+
 function clubPicker(suggested: string | undefined, onPick: (c: string) => void) {
   modal(`<h2>Which club?</h2><div class="clubgrid">${app.bag.filter((c) => c.on).map((c) => `<button data-club="${c.name}" class="${c.name === suggested ? 'sug' : ''}">${c.name}<small>${c.yds} yds</small></button>`).join('')}</div>
     <div class="row" style="margin-top:12px"><button class="btn grow" data-act="closemodal">Cancel</button></div>`);
@@ -537,11 +550,24 @@ function showOptions(from: XY, lie: Lie) {
   renderPanel(); redraw();
 }
 
-function exportData() {
-  const blob = new Blob([JSON.stringify(S(), null, 1)], { type: 'application/json' });
+async function exportData() {
+  const filename = `cedarcrest-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  const json = JSON.stringify(S(), null, 1);
+  const claude = (window as any).claude;
+  if (claude?.use) {
+    // Inside a Claude artifact: plain downloads are blocked, so ask the viewer to save it.
+    const downloads = await claude.use('downloads').catch(() => null);
+    if (downloads) {
+      try { await downloads.save({ filename, data: json }); toast('Backup saved'); } catch { toast('Backup not saved'); }
+    } else {
+      try { await navigator.clipboard.writeText(json); toast('Backup copied. Paste it into a note to keep it.'); } catch { toast('Saving backups isn\'t available here.'); }
+    }
+    return;
+  }
+  const blob = new Blob([json], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `cedarcrest-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
@@ -555,7 +581,7 @@ function importData() {
     try {
       const data = JSON.parse(await f.text());
       if (data.version !== 1 || !Array.isArray(data.rounds)) throw new Error('bad file');
-      if (!confirm(`Replace your data with this backup (${data.rounds.length} rounds)?`)) return;
+      if (!(await ask(`Replace your data with this backup (${data.rounds.length} rounds)?`, 'Replace', true))) return;
       app.state = migrate(data);
       saveNow(S()); refreshBag(); closeModal(); refresh(); toast('Backup restored');
     } catch { toast('That file is not a Cedar Crest backup.'); }
@@ -642,15 +668,17 @@ function onClick(e: Event) {
     case 'resetpin': delete S().pins[app.ref]; save(); refresh(); break;
     case 'teeset': S().settings.teeSet = el.dataset.v as TeeSet; save(); refresh(); break;
     case 'startround': startRound(); break;
-    case 'endround': {
-      if (!confirm('End this round?')) break;
-      const r = round()!;
-      r.finished = true;
-      for (const [k, h] of Object.entries(r.holes)) if (!h.done) delete r.holes[+k];
-      S().activeRoundId = null;
-      if (!Object.keys(r.holes).length) S().rounds = S().rounds.filter((x) => x.id !== r.id);
-      saveNow(S()); refreshBag(); app.tab = 'stats'; refresh(); break;
-    }
+    case 'endround':
+      ask('End this round?', 'End round').then((ok) => {
+        if (!ok) return;
+        const r = round()!;
+        r.finished = true;
+        for (const [k, h] of Object.entries(r.holes)) if (!h.done) delete r.holes[+k];
+        S().activeRoundId = null;
+        if (!Object.keys(r.holes).length) S().rounds = S().rounds.filter((x) => x.id !== r.id);
+        saveNow(S()); refreshBag(); app.tab = 'stats'; refresh();
+      });
+      break;
     case 'simnow': app.mode = { kind: 'sim' }; renderModebar(); break;
     case 'mark': markShot(); break;
     case 'ongreen': {
@@ -661,7 +689,7 @@ function onClick(e: Event) {
     }
     case 'putt': if (rec) { rec.putts = Math.max(0, Math.min(9, rec.putts + +el.dataset.d!)); save(); renderPanel(); } break;
     case 'pen': if (rec) { rec.shots[i].penalty = (rec.shots[i].penalty + 1) % 3; save(); renderPanel(); } break;
-    case 'delshot': if (rec && confirm('Delete this shot?')) { rec.shots.splice(i, 1); save(); renderPanel(); redraw(); } break;
+    case 'delshot': if (rec) ask('Delete this shot?', 'Delete', true).then((ok) => { if (ok) { rec.shots.splice(i, 1); save(); renderPanel(); redraw(); } }); break;
     case 'finish': finishHoleDialog(); break;
     case 'reopen': if (rec) { rec.done = false; save(); refreshBag(); refresh(); } break;
     case 'playopts': {
@@ -672,9 +700,9 @@ function onClick(e: Event) {
       break;
     }
     case 'togglehist': app.showHistory = !app.showHistory; renderPanel(); redraw(); if (app.showHistory) app.scene.view('top'); break;
-    case 'export': exportData(); break;
+    case 'export': void exportData(); break;
     case 'import': importData(); break;
-    case 'wipe': if (confirm('Erase all rounds, plans and settings on this phone?')) { app.state = freshState(); saveNow(S()); refreshBag(); closeModal(); refresh(); } break;
+    case 'wipe': ask('Erase all rounds, plans and settings on this device?', 'Erase everything', true).then((ok) => { if (ok) { app.state = freshState(); saveNow(S()); refreshBag(); refresh(); } else menu(); }); break;
     case 'resetbag': S().bag = DEFAULT_BAG.map((c) => ({ ...c })); save(); refreshBag(); menu(); break;
   }
 }

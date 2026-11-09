@@ -16,8 +16,9 @@
   --safe-t: env(safe-area-inset-top, 0px);
 }
 @media (prefers-color-scheme: dark) {
-  :root { --panel: #18211b; --ink: #e8efe9; --muted: #9aaa9f; --line: #2c3a31; --chip: #243028; --accent: #39a96b; }
+  :root:not([data-theme="light"]) {  --panel: #18211b; --ink: #e8efe9; --muted: #9aaa9f; --line: #2c3a31; --chip: #243028; --accent: #39a96b; color-scheme: dark; }
 }
+:root[data-theme="dark"] {  --panel: #18211b; --ink: #e8efe9; --muted: #9aaa9f; --line: #2c3a31; --chip: #243028; --accent: #39a96b; color-scheme: dark; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overscroll-behavior: none; }
 button, input, select, textarea { font: inherit; color: inherit; }

@@ -119,8 +119,8 @@ export class Course {
   static async load(base = './data/'): Promise<Course> {
     const data: CourseData = await (await fetch(base + 'course.json')).json();
     const [buf, can] = await Promise.all([
-      fetch(base + data.terrain.file).then((r) => r.arrayBuffer()),
-      data.canopy ? fetch(base + data.canopy.file).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null) : null,
+      fetchBinary(base + data.terrain.file),
+      data.canopy ? fetchBinary(base + data.canopy.file).catch(() => null) : null,
     ]);
     return new Course(data, new Uint16Array(buf), can ? new Uint8Array(can) : undefined);
   }
@@ -262,6 +262,17 @@ export class Course {
     const { origin, metersPerDeg } = this.data;
     return { lat: origin.lat + p[1] / metersPerDeg.y, lon: origin.lon + p[0] / metersPerDeg.x };
   }
+}
+
+/** Binary data file; a `.txt` file holds the same bytes as base64 (for hosts that only serve text). */
+async function fetchBinary(url: string): Promise<ArrayBuffer> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  if (!url.endsWith('.txt')) return res.arrayBuffer();
+  const bin = atob((await res.text()).trim());
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
 }
 
 function distToLine(p: XY, pts: XY[]): number {
