@@ -67,6 +67,7 @@ export interface Settings {
   exaggerate: number;
   simulateGps: boolean;
   useMyNumbers: boolean;
+  showWind: boolean;
 }
 
 export interface State {
@@ -85,7 +86,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true },
+    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},

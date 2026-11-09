@@ -1,4 +1,5 @@
 import './styles.css';
+import { bestFix } from './gps';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
 import { Conditions, fetchConditions, windComponents, playsLike, compass } from './conditions';
@@ -33,6 +34,7 @@ const app = {
   stats: [] as ClubStat[],
   bag: [] as Club[],
   watchId: null as number | null,
+  fixes: [] as { xy: XY; acc: number; at: number }[], // recent GPS readings
 };
 
 // ---------------- helpers ----------------
@@ -93,8 +95,12 @@ function renderTop() {
     <button class="navbtn" data-act="next" aria-label="Next hole">›</button>
     <button class="navbtn" data-act="menu" aria-label="Menu">☰</button>`;
   $('#tabs').innerHTML = (['plan', 'play', 'stats'] as Tab[]).map((k) => `<button data-tab="${k}" class="${app.tab === k ? 'on' : ''}">${{ plan: 'Plan', play: round() ? 'Play ●' : 'Play', stats: 'Stats' }[k]}</button>`).join('');
-  $('#viewbtns').innerHTML = (['tee', 'top', 'green'] as ViewName[]).map((v) => `<button data-view="${v}">${{ tee: 'Tee', top: 'Top', green: 'Green' }[v]}</button>`).join('') +
+  const cur = app.scene?.currentView;
+  $('#viewbtns').innerHTML = `<button class="compass" data-act="northup" aria-label="Compass: tap for the course map, north up"><i id="needle">▲</i><small>N</small></button>` +
+    (['tee', 'top', 'green', 'course'] as ViewName[]).map((v) => `<button data-view="${v}" class="${cur === v ? 'on' : ''}">${{ tee: 'Tee', top: 'Top', green: 'Green', course: 'Course' }[v]}</button>`).join('') +
+    `<button data-act="wind" class="${S().settings.showWind ? 'on' : ''}" aria-pressed="${S().settings.showWind}">Wind</button>` +
     (myPos() ? '<button data-act="viewme">Me</button>' : '');
+  setNeedle(lastNeedle);
 }
 
 function renderModebar() {
@@ -107,10 +113,18 @@ function renderModebar() {
   $('#app').appendChild(bar);
 }
 
+let lastNeedle = 0;
+function setNeedle(deg: number) {
+  lastNeedle = deg;
+  const n = document.getElementById('needle');
+  if (n) n.style.transform = `rotate(${deg}deg)`;
+}
+
 // ---------------- 3D overlays ----------------
 function redraw() {
   const sc = app.scene;
   sc.clearOverlay();
+  sc.setWind(S().settings.showWind ? cond() : null);
   sc.setMe(myPos(), usingSim() ? 2 : app.gps?.acc ?? 5);
   const pinXY = pin();
   if (app.tab === 'plan') {
@@ -509,7 +523,10 @@ function startGps() {
   if (app.watchId !== null || !('geolocation' in navigator)) { if (!('geolocation' in navigator)) app.gpsError = 'not available on this device'; return; }
   app.watchId = navigator.geolocation.watchPosition(
     (p) => {
-      app.gps = { xy: app.course.toXY(p.coords.latitude, p.coords.longitude), acc: p.coords.accuracy, at: Date.now() };
+      const now = Date.now();
+      app.fixes.push({ xy: app.course.toXY(p.coords.latitude, p.coords.longitude), acc: Math.max(1, p.coords.accuracy), at: now });
+      app.fixes = app.fixes.filter((f) => now - f.at < 12000).slice(-15);
+      app.gps = bestFix(app.fixes);
       app.gpsError = '';
       if (app.tab === 'play') { renderPanel(); app.scene.setMe(myPos(), usingSim() ? 2 : p.coords.accuracy); }
     },
@@ -522,6 +539,7 @@ function markShot() {
   const me = myPos();
   const rec = holeRec();
   if (!me || !rec) return;
+  if (!usingSim() && app.gps && app.gps.acc > 12) toast(`Weak GPS (±${Math.round(app.gps.acc * 1.09)} yds). Standing still for a few seconds helps.`, 3500);
   const idx = rec.shots.length;
   const lie: Lie = idx === 0 ? 'tee' : app.course.lieAt(me, hole());
   const suggestedClub = app.options?.[app.selOpt]?.club ?? plan().steps[idx]?.club;
@@ -591,6 +609,11 @@ function importData() {
 
 function onTap(p: XY) {
   const m = app.mode;
+  if (!m && app.scene.currentView === 'course') {
+    const ref = app.scene.holeNear(p);
+    if (ref) { app.scene.currentView = 'tee'; goHole(ref); }
+    return;
+  }
   if (m?.kind === 'aim') {
     const pl = plan();
     pl.steps[m.step].target = p;
@@ -624,7 +647,12 @@ function onClick(e: Event) {
     $('#sheet').classList.remove('min');
     refresh(); return;
   }
-  if (el.dataset.view) { app.scene.view(el.dataset.view as ViewName); return; }
+  if (el.dataset.view) {
+    app.scene.view(el.dataset.view as ViewName);
+    if (el.dataset.view === 'course') toast('Tap a hole to jump to it');
+    renderTop();
+    return;
+  }
   const i = +(el.dataset.i ?? -1);
   const act = el.dataset.act!;
   const pl = plan();
@@ -633,6 +661,16 @@ function onClick(e: Event) {
     case 'prev': goHole(app.ref - 1); break;
     case 'next': goHole(app.ref + 1); break;
     case 'menu': menu(); break;
+    case 'northup': app.scene.view('course'); renderTop(); break;
+    case 'wind': {
+      S().settings.showWind = !S().settings.showWind;
+      save();
+      const c = cond();
+      if (S().settings.showWind && c.windMph < 1) toast(c.fetchedAt ? 'No wind right now' : 'Tap Get weather (Plan tab) or enter the wind to see arrows');
+      else if (S().settings.showWind) toast(`Wind ${Math.round(c.windMph)} mph from the ${compass(c.windFrom)}`);
+      renderTop(); redraw();
+      break;
+    }
     case 'closemodal': closeModal(); break;
     case 'cancelmode': app.mode = null; renderModebar(); break;
     case 'viewme': { const me = myPos(); if (me) app.scene.focus(me); break; }
@@ -740,6 +778,7 @@ async function boot() {
   refreshBag();
   app.scene = new HoleScene($('#view'), app.course);
   app.scene.onTap = onTap;
+  app.scene.onCompass = setNeedle;
   app.scene.setExaggeration(S().settings.exaggerate);
   const hash = +location.hash.replace('#', '');
   if (hash >= 1 && hash <= 18) app.ref = hash;

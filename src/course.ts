@@ -36,6 +36,11 @@ export interface CourseData {
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   terrain: { file: string; cols: number; rows: number; cell: number; minX: number; minY: number; minH: number; maxH: number; scale: number };
   canopy?: { file: string; source: string }; // tree heights (m) on the terrain grid
+  landmarks?: {
+    buildings: { ring: XY[]; name: string | null; levels: number | null; area: number; clubhouse?: boolean }[];
+    parking: XY[][];
+    roads: { name: string; kind: string; line: XY[] }[];
+  };
   boundary: XY[][];
   holes: Hole[];
   features: Feature[];
@@ -93,6 +98,12 @@ export class Course {
   owner = new Map<string, number>();
   private byId = new Map<string, Feature>();
   private boundary: Feature;
+  // 1 m lookup grid: 0 = off the course, 1 = course (rough), n = features[n - 2].
+  private grid!: Uint16Array;
+  private gx0 = 0;
+  private gy0 = 0;
+  private gw = 0;
+  private gh = 0;
 
   constructor(data: CourseData, raw: Uint16Array, canopy?: Uint8Array) {
     this.data = data;
@@ -114,6 +125,48 @@ export class Course {
         if (d < best) { best = d; this.owner.set(f.id, h.ref); }
       }
     }
+    this.buildGrid();
+  }
+
+  /** Paint every area onto a 1 m grid once, so finding the lie at a point is a single lookup. */
+  private buildGrid() {
+    const b = this.data.bounds;
+    this.gx0 = b.minX; this.gy0 = b.minY;
+    this.gw = Math.ceil(b.maxX - b.minX) + 1; this.gh = Math.ceil(b.maxY - b.minY) + 1;
+    this.grid = new Uint16Array(this.gw * this.gh);
+    this.fillRings(this.data.boundary, 1);
+    // Lowest priority first, so water, sand and greens end up on top.
+    for (let i = this.features.length - 1; i >= 0; i--) {
+      const f = this.features[i];
+      if (f.kind !== 'range') this.fillRings([...f.rings, ...f.holes], i + 2);
+    }
+  }
+
+  private fillRings(rings: XY[][], value: number) {
+    const bb = bboxOf(rings);
+    const r0 = Math.max(0, Math.floor(bb[1] - this.gy0)), r1 = Math.min(this.gh - 1, Math.ceil(bb[3] - this.gy0));
+    const xs: number[] = [];
+    for (let r = r0; r <= r1; r++) {
+      const y = this.gy0 + r + 0.5;
+      xs.length = 0;
+      for (const ring of rings) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const [xi, yi] = ring[i], [xj, yj] = ring[j];
+          if (yi > y !== yj > y) xs.push(xi + ((y - yi) * (xj - xi)) / (yj - yi));
+        }
+      }
+      xs.sort((a, c) => a - c);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const c0 = Math.max(0, Math.ceil(xs[k] - this.gx0 - 0.5)), c1 = Math.min(this.gw - 1, Math.floor(xs[k + 1] - this.gx0 - 0.5));
+        this.grid.fill(value, r * this.gw + c0, r * this.gw + c1 + 1);
+      }
+    }
+  }
+
+  private cell(p: XY): number {
+    const c = Math.floor(p[0] - this.gx0), r = Math.floor(p[1] - this.gy0);
+    if (c < 0 || r < 0 || c >= this.gw || r >= this.gh) return 0;
+    return this.grid[r * this.gw + c];
   }
 
   static async load(base = './data/'): Promise<Course> {
@@ -150,11 +203,17 @@ export class Course {
 
   /** The feature (fairway, green, bunker…) under a point, if any. */
   featureAt(p: XY): Feature | null {
-    for (const f of this.features) if (f.kind !== 'range' && pointInFeature(p, f)) return f;
-    return null;
+    const v = this.cell(p);
+    return v >= 2 ? this.features[v - 2] : null;
   }
 
   kindAt(p: XY): Kind | 'ob' {
+    const v = this.cell(p);
+    return v === 0 ? 'ob' : v === 1 ? 'rough' : this.features[v - 2].kind;
+  }
+
+  /** Slow exact version of kindAt, used by tests to check the grid. */
+  kindAtExact(p: XY): Kind | 'ob' {
     if (!pointInFeature(p, this.boundary)) return 'ob';
     for (const f of this.features) if (f.kind !== 'range' && pointInFeature(p, f)) return f.kind;
     return 'rough';

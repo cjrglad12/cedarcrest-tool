@@ -6,6 +6,7 @@ import { carryFactor, windComponents, playsLike, CALM } from '../src/conditions'
 import { suggest, buildPlan } from '../src/advice';
 import { analyzeHole, clubStats, effectiveBag } from '../src/stats';
 import { freshState, migrate, DEFAULT_BAG, HoleRec } from '../src/store';
+import { bestFix } from '../src/gps';
 
 const data: CourseData = JSON.parse(readFileSync(new URL('../public/data/course.json', import.meta.url), 'utf8'));
 const raw = readFileSync(new URL('../public/data/terrain.bin', import.meta.url));
@@ -58,6 +59,17 @@ describe('trees and holes', () => {
     let trees = 0;
     for (const v of course.canopy) if (v >= 4) trees++;
     expect(trees / course.canopy.length).toBeGreaterThan(0.1);
+  });
+  it('the 1 m lie grid matches the exact shapes', () => {
+    const b = course.data.bounds;
+    let x = 12345, diff = 0;
+    const rnd = () => ((x = (x * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const N = 20000;
+    for (let i = 0; i < N; i++) {
+      const p: [number, number] = [b.minX + rnd() * (b.maxX - b.minX), b.minY + rnd() * (b.maxY - b.minY)];
+      if (course.kindAt(p) !== course.kindAtExact(p)) diff++;
+    }
+    expect(diff / N).toBeLessThan(0.01); // only right on the edges
   });
   it('assigns each green to its own hole', () => {
     for (const h of course.holes) expect(course.owner.get(h.greenId!)).toBe(h.ref);
@@ -193,5 +205,18 @@ describe('store', () => {
     expect(s.settings.handicap).toBe(9);
     expect(s.settings.teeSet).toBe('middle');
     expect(s.bag.length).toBe(DEFAULT_BAG.length);
+  });
+});
+
+describe('gps', () => {
+  it('blends sharp readings and ignores poor ones', () => {
+    const f = bestFix([
+      { xy: [0, 0], acc: 4, at: 1 },
+      { xy: [2, 0], acc: 4, at: 2 },
+      { xy: [40, 40], acc: 30, at: 3 },
+    ])!;
+    expect(f.xy[0]).toBeCloseTo(1, 5);
+    expect(f.xy[1]).toBeCloseTo(0, 5);
+    expect(f.acc).toBeCloseTo(4 / Math.sqrt(2), 5);
   });
 });

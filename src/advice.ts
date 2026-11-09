@@ -176,11 +176,11 @@ export function suggest(ctx: Ctx, limit = 5): Option[] {
       const bases = [bearing(from, pointOnLineAt(hole, from, reach)), pinBrg];
       const seen = new Set<number>();
       for (const base of bases) {
-        for (let off = -15; off <= 15; off += 3.75) {
+        for (let off = -15; off <= 15; off += 2.5) {
           const key = Math.round((base + off) * 2);
           if (seen.has(key)) continue;
           seen.add(key);
-          options.push(evaluate(ctx, club, base + off, swing, 120));
+          options.push(evaluate(ctx, club, base + off, swing, 200));
         }
       }
     }
@@ -193,7 +193,7 @@ export function suggest(ctx: Ctx, limit = 5): Option[] {
   for (const o of options) if (!best.has(o.club)) best.set(o.club, o);
   // Re-check the finalists with more simulated shots.
   return [...best.values()].slice(0, limit + 2)
-    .map((o) => evaluate(ctx, ctx.bag.find((c) => c.name === o.club)!, o.brg, o.swing, 400))
+    .map((o) => evaluate(ctx, ctx.bag.find((c) => c.name === o.club)!, o.brg, o.swing, 800))
     .sort((a, b) => rank(a) - rank(b))
     .slice(0, limit);
 }

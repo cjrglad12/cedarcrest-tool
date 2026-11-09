@@ -114,6 +114,21 @@ function inside(pt, ring) {
 
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
+function polyArea(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+  return Math.abs(a / 2);
+}
+
+function convexHull(points) {
+  const p = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const q of p) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
+  for (const q of p.reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
 // ---------- TIFF (uncompressed float32) ----------
 function readTiffF32(buf) {
   const le = buf.toString('ascii', 0, 2) === 'II';
@@ -316,6 +331,50 @@ async function main() {
     maxY: Math.ceil(Math.max(...allPts.map((p) => p[1])) + M),
   };
 
+  // Landmarks for finding your way: buildings (the clubhouse), parking and named streets
+  const inBounds = (pt, m = 0) => pt[0] > bounds.minX - m && pt[0] < bounds.maxX + m && pt[1] > bounds.minY - m && pt[1] < bounds.maxY + m;
+  const buildings = [];
+  for (const [id, w] of ways) {
+    const b = w.tags.building;
+    if (!b || ['house', 'garage', 'shed', 'roof'].includes(b) || w.nds[0] !== w.nds[w.nds.length - 1]) continue;
+    const ring = ringXY(w.nds);
+    if (ring.length < 4 || !inBounds(centroid(ring))) continue;
+    buildings.push({ ring, name: w.tags.name || null, levels: +w.tags['building:levels'] || null, area: Math.round(polyArea(ring)) });
+  }
+  const firstTee = holes[0].tees[0].center, lastGreen = holes[holes.length - 1].pin;
+  const club = buildings
+    .filter((b) => Math.min(dist(centroid(b.ring), firstTee), dist(centroid(b.ring), lastGreen)) < 150)
+    .sort((a, b) => b.area - a.area)[0];
+  if (club && !club.name) { club.name = 'Clubhouse'; club.clubhouse = true; }
+  const parking = [];
+  for (const [type, map] of [['way', ways], ['relation', rels]]) {
+    for (const [, e] of map) {
+      if (e.tags.amenity !== 'parking') continue;
+      const rings = type === 'way' ? areaRings(e, 'way') : areaRings(e, 'relation').outer;
+      if (rings[0]?.length > 3 && inBounds(centroid(rings[0]))) parking.push(rings[0]);
+    }
+  }
+  // Lots that are only mapped by their driving lanes: outline the lanes.
+  const aisles = [...ways.values()].filter((w) => w.tags.service === 'parking_aisle').map((w) => ringXY(w.nds)).filter((l) => l.length > 1 && inBounds(centroid(l)));
+  const groups = [];
+  for (const a of aisles) {
+    const g = groups.find((grp) => grp.some((b) => dist(centroid(b), centroid(a)) < 40));
+    if (g) g.push(a); else groups.push([a]);
+  }
+  for (const g of groups) {
+    const hull = convexHull(g.flat());
+    const c = centroid(hull);
+    parking.push(hull.map((p) => { const d = dist(p, c) || 1; return [round(p[0] + ((p[0] - c[0]) / d) * 8), round(p[1] + ((p[1] - c[1]) / d) * 8)]; }));
+  }
+  const ROADS = new Set(['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'secondary_link', 'tertiary_link', 'living_street']);
+  const roads = [];
+  for (const [, w] of ways) {
+    if (!ROADS.has(w.tags.highway)) continue;
+    const line = ringXY(w.nds);
+    if (line.length > 1 && line.some((p) => inBounds(p, 30))) roads.push({ name: w.tags.name || '', kind: w.tags.highway, line });
+  }
+  console.log(`Landmarks: ${buildings.length} buildings${club ? ' (clubhouse found)' : ''}, ${parking.length} parking lots, ${roads.length} streets`);
+
   // Terrain from USGS 3DEP
   const cols = Math.round((bounds.maxX - bounds.minX) / CELL) + 1;
   const rows = Math.round((bounds.maxY - bounds.minY) / CELL) + 1;
@@ -362,6 +421,7 @@ async function main() {
     canopy: { file: 'canopy.bin', source: 'Meta & World Resources Institute, High Resolution Canopy Height Maps (CC BY 4.0)' },
     boundary: boundaryRings,
     holes, features, paths, trees,
+    landmarks: { buildings, parking, roads },
   };
   await writeFile(new URL('course.json', OUT), JSON.stringify(course));
   console.log('Wrote public/data/course.json and terrain.bin');
