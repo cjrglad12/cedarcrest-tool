@@ -81,6 +81,7 @@ export interface Settings {
   /** Course rating and slope per tee set, from the scorecard, for score differentials. */
   ratings: Partial<Record<TeeSet, { rating: number; slope: number }>>;
   lastBackup: string | null;
+  leftHanded: boolean;
 }
 
 export interface State {
@@ -99,7 +100,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {}, lastBackup: null },
+    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},

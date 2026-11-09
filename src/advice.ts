@@ -14,6 +14,24 @@ export interface Ctx {
   cond: Conditions;
   bag: Club[];
   handicap: number;
+  leftHanded?: boolean;
+}
+
+/**
+ * How the slope under the ball changes a shot. Uphill lies fly higher and shorter,
+ * downhill lower and longer. With the ball above your feet it tends to go left
+ * (for a right-hander), below your feet to the right.
+ */
+export function lieEffect(ctx: Ctx, brg: number) {
+  if (ctx.lie === 'tee' || ctx.lie === 'green') return { distance: 1, pullDeg: 0, spread: 1, slope: { along: 0, across: 0 } };
+  const slope = ctx.course.lieSlope(ctx.from, brg);
+  const up = Math.max(-12, Math.min(12, slope.along));
+  const distance = 1 - (up > 0 ? 0.012 * up : 0.01 * up); // ~1% per degree
+  // Ball above the feet (ground rising on the far side of the ball) pulls it toward the golfer's front side.
+  const aboveFeet = ctx.leftHanded ? -slope.across : slope.across;
+  const pullDeg = Math.max(-6, Math.min(6, aboveFeet * 0.45)) * (ctx.leftHanded ? 1 : -1);
+  const spread = 1 + Math.min(0.4, (Math.abs(slope.along) + Math.abs(slope.across)) * 0.03);
+  return { distance: Math.max(0.85, Math.min(1.12, distance)), pullDeg, spread, slope };
 }
 
 export interface Option {
@@ -108,7 +126,7 @@ export function treeStop(ctx: Ctx, to: XY, apex: number): XY | null {
 /** Average carry-and-roll in meters for a shot on this bearing, after wind, temperature, lie and slope. */
 export function meanDistance(ctx: Ctx, club: Club, brg: number, swing = 1): number {
   const { course, from, cond } = ctx;
-  const base = club.yds * YD * swing * LIE_DISTANCE[ctx.lie] * carryFactor(cond, brg);
+  const base = club.yds * YD * swing * LIE_DISTANCE[ctx.lie] * carryFactor(cond, brg) * lieEffect(ctx, brg).distance;
   const h0 = course.height(from[0], from[1]);
   let d = base;
   for (let k = 0; k < 3; k++) {
@@ -123,11 +141,12 @@ export function evaluate(ctx: Ctx, club: Club, brg: number, swing = 1, n = 160):
   const { course, hole, from, cond } = ctx;
   const meanM = meanDistance(ctx, club, brg, swing);
   const sdM = (club.sdYds * YD * (swing < 1 ? 0.8 : 1)) / (ctx.lie === 'recovery' ? 0.7 : 1);
-  const sdDeg = club.sdDeg * (ctx.lie === 'recovery' ? 1.8 : ctx.lie === 'rough' ? 1.15 : 1);
-  // Crosswind drift: about 1% of the distance per mph.
+  const slopeFx = lieEffect(ctx, brg);
+  const sdDeg = club.sdDeg * (ctx.lie === 'recovery' ? 1.8 : ctx.lie === 'rough' ? 1.15 : 1) * slopeFx.spread;
+  // Crosswind drift: about 1% of the distance per mph; plus the pull from a sidehill lie.
   const rel = ((cond.windFrom - brg) * Math.PI) / 180;
   const cross = -cond.windMph * Math.sin(rel);
-  const driftDeg = (Math.atan(cross * 0.01) * 180) / Math.PI;
+  const driftDeg = (Math.atan(cross * 0.01) * 180) / Math.PI + slopeFx.pullDeg;
   const r = rng(Math.round(brg * 1000 + club.yds * 31 + swing * 97 + from[0] * 7 + from[1] * 13));
   const green = course.greenOf(hole);
   const apex = apexFor(meanM, ctx.lie);

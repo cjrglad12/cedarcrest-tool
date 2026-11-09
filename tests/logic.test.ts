@@ -268,3 +268,35 @@ describe('net double bogey', () => {
     expect(new Set(course.holes.map((h) => h.handicap)).size).toBe(18);
   });
 });
+
+describe('slope under the ball', () => {
+  it('reads uphill along the line and the opposite way back', () => {
+    // Find a sloped spot on hole 1 and check the reading flips when you turn around.
+    const h = course.hole(1);
+    const t = teeFor(h, 'middle').center;
+    let found = false;
+    for (let k = 0.2; k < 0.9 && !found; k += 0.05) {
+      const p = course.alongLine(h, t, dist(t, h.pin) * k);
+      const a = course.lieSlope(p, 0), b = course.lieSlope(p, 180);
+      if (Math.abs(a.along) > 1) {
+        expect(b.along).toBeCloseTo(-a.along, 5);
+        expect(b.across).toBeCloseTo(-a.across, 5);
+        found = true;
+      }
+    }
+    expect(found).toBe(true);
+  });
+  it('an uphill lie makes the ball go shorter', async () => {
+    const { lieEffect } = await import('../src/advice');
+    const fake = { ...course, lieSlope: () => ({ along: 6, across: 0 }) } as unknown as typeof course;
+    const ctx = { course: fake, hole: course.hole(1), from: [0, 0] as [number, number], lie: 'fairway' as const, pin: course.hole(1).pin, cond: CALM, bag: [], handicap: 15 };
+    expect(lieEffect(ctx, 0).distance).toBeLessThan(0.95);
+    const fake2 = { ...course, lieSlope: () => ({ along: 0, across: 5 }) } as unknown as typeof course;
+    expect(lieEffect({ ...ctx, course: fake2 }, 0).pullDeg).toBeLessThan(0); // right-hander, ball above feet: pulls left
+    // Same slope for a left-hander means the ball is below the feet, which also tends left.
+    expect(lieEffect({ ...ctx, course: fake2, leftHanded: true }, 0).pullDeg).toBeLessThan(0);
+    // Ground rising to the left puts the ball above a left-hander's feet: it goes right.
+    const fake3 = { ...course, lieSlope: () => ({ along: 0, across: -5 }) } as unknown as typeof course;
+    expect(lieEffect({ ...ctx, course: fake3, leftHanded: true }, 0).pullDeg).toBeGreaterThan(0);
+  });
+});

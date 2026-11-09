@@ -60,7 +60,7 @@ function refreshBag() {
 }
 
 function ctx(from: XY, lie: Lie): Ctx {
-  return { course: app.course, hole: hole(), from, lie, pin: pin(), cond: cond(), bag: app.bag, handicap: S().settings.handicap };
+  return { course: app.course, hole: hole(), from, lie, pin: pin(), cond: cond(), bag: app.bag, handicap: S().settings.handicap, leftHanded: S().settings.leftHanded };
 }
 
 let warningUntil = 0;
@@ -325,6 +325,22 @@ function renderOptions(): string {
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 // ---------------- Play tab ----------------
+/** The slope under the ball, in words, with what it does to the shot. */
+function lieHtml(from: XY, toward: XY) {
+  const lie = app.course.lieAt(from, hole());
+  if (lie === 'green' || dist(from, tee().center) < 15) return '';
+  const { along, across } = app.course.lieSlope(from, bearing(from, toward));
+  const above = S().settings.leftHanded ? -across : across;
+  const parts: string[] = [], tips: string[] = [];
+  if (along >= 2) { parts.push(`${Math.round(along)}° uphill`); tips.push('flies higher and shorter: take more club'); }
+  else if (along <= -2) { parts.push(`${Math.round(-along)}° downhill`); tips.push('flies lower and runs: take less club'); }
+  const side = S().settings.leftHanded ? ['right', 'left'] : ['left', 'right'];
+  if (above >= 2) { parts.push(`ball ${Math.round(above)}° above feet`); tips.push(`tends to go ${side[0]}: aim a little ${side[1]}`); }
+  else if (above <= -2) { parts.push(`ball ${Math.round(-above)}° below feet`); tips.push(`tends to go ${side[1]}: aim a little ${side[0]}`); }
+  if (!parts.length) return '<div class="lie-row"><span class="chip">Lie: flat</span></div>';
+  return `<div class="lie-row"><span class="chip">Lie: ${parts.join(' · ')}</span><span class="tiny muted">${tips.join('; ')}</span></div>`;
+}
+
 /** Bunkers and water between you and the green: yards to reach and to carry. */
 function carriesHtml(from: XY, pinXY: XY) {
   const hz = app.course.hazards(hole(), from, pinXY).slice(0, 4);
@@ -392,6 +408,7 @@ function renderPlay(): string {
     return `${distances}
       <div class="row wrap small" style="margin:8px 0"><span class="chip">💨 ${windText(from, rec.pin)}</span><span class="chip">${pl.riseFt >= 0 ? '▲' : '▼'} ${Math.abs(pl.riseFt)} ft</span><button class="btn sm" data-act="playopts">What should I hit?</button></div>
       ${carriesHtml(from, rec.pin)}
+      ${me ? lieHtml(me, rec.pin) : ''}
       ${app.options ? renderOptions() : ''}
       <div class="scorebox">
         <div><div class="small muted">Score</div><div class="stepper big"><button data-act="qs" data-d="-1" aria-label="One less stroke">−</button><b>${strokes}</b><button data-act="qs" data-d="1" aria-label="One more stroke">+</button></div><div class="tiny muted">${strokes - h.par === 0 ? 'Par' : toPar(strokes - h.par)}</div></div>
@@ -415,6 +432,7 @@ function renderPlay(): string {
       ${planned ? `<span class="chip">Plan: ${planned.club} → ${y0(dist(from, planned.target))}</span>` : ''}
       <button class="btn sm" data-act="playopts">What should I hit?</button></div>
     ${carriesHtml(from, rec.pin)}
+    ${me ? lieHtml(me, rec.pin) : ''}
     ${app.options ? renderOptions() : ''}
     ${rec.shots.length ? `<ul class="list">${shotRows}</ul>` : '<p class="small muted" style="margin:4px 0">Stand at your ball and tap <b>Mark shot</b> before each swing.</p>'}
     <div class="row" style="margin-top:6px">
@@ -621,6 +639,7 @@ function menu() {
     <div class="row spread"><span>Handicap</span><input class="hcp-in" inputmode="decimal" autocomplete="off" value="${fmtHcp(s.handicap)}" data-set="handicap" aria-label="Handicap index"/></div>
     <div class="row spread" style="margin-top:8px"><span>Default tees</span><select class="clubsel" data-set="teeSet">${(['back', 'middle', 'forward'] as TeeSet[]).map((t) => `<option ${t === s.teeSet ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
     <div class="row spread" style="margin-top:8px"><span>Slope exaggeration</span><select class="clubsel" data-set="exaggerate">${[1, 1.5, 2, 3].map((v) => `<option value="${v}" ${v === s.exaggerate ? 'selected' : ''}>${v}×</option>`).join('')}</select></div>
+    <label class="row spread" style="margin-top:8px"><span>Left-handed</span><input type="checkbox" data-set="leftHanded" ${s.leftHanded ? 'checked' : ''}/></label>
     <label class="row spread" style="margin-top:8px"><span>Practice mode (place ball by hand)</span><input type="checkbox" data-set="simulateGps" ${s.simulateGps ? 'checked' : ''}/></label>
     <h3>Course rating &amp; slope</h3>
     <p class="tiny muted">Pre-filled (grey) from the published scorecard: Black 71.7 / 133, Gold 69.3 / 128. Type your own if the card at the course differs.</p>

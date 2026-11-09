@@ -195,6 +195,25 @@ export class Course {
     return (H[i] * (1 - fx) + H[i + 1] * fx) * (1 - fy) + (H[i + t.cols] * (1 - fx) + H[i + t.cols + 1] * fx) * fy;
   }
 
+  /**
+   * Slope of the ground under the ball, relative to the line you're hitting along.
+   * `along` > 0 = uphill lie; `across` > 0 = ground rises to the right of the line.
+   * Both in degrees, averaged over a few meters (the elevation grid is 2 m).
+   */
+  lieSlope(p: XY, brg: number): { along: number; across: number } {
+    let gx = 0, gy = 0;
+    for (const e of [2, 3]) {
+      gx += (this.height(p[0] + e, p[1]) - this.height(p[0] - e, p[1])) / (2 * e);
+      gy += (this.height(p[0], p[1] + e) - this.height(p[0], p[1] - e)) / (2 * e);
+    }
+    gx /= 2; gy /= 2;
+    const r = (brg * Math.PI) / 180;
+    const fwd = gx * Math.sin(r) + gy * Math.cos(r);
+    const right = gx * Math.cos(r) - gy * Math.sin(r);
+    const deg = (g: number) => (Math.atan(g) * 180) / Math.PI;
+    return { along: deg(fwd), across: deg(right) };
+  }
+
   /** Tree height in meters at a point (0 = open). */
   treeAt(x: number, y: number): number {
     const t = this.data.terrain;

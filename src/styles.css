@@ -155,3 +155,4 @@ table.card-t td:first-child, table.card-t th:first-child { text-align: left; pad
 .statgrid b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
 .statgrid span { font-size: 11px; color: var(--muted); }
 #toast.warn { background: #8a2b1a; }
+.lie-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 2px 0 6px; }
