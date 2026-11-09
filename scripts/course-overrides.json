@@ -1,0 +1,9 @@
+{
+  "_note": "Corrections applied on top of OpenStreetMap data. Sources: the course's scorecard (golfcedarcrest.com), GolfPass/Golf Advisor and 18Birdies listings, gathered Nov 2026. Check against the physical scorecard.",
+  "par": { "10": 5 },
+  "strokeIndex": [2, 17, 3, 6, 13, 10, 9, 16, 12, 1, 4, 15, 18, 8, 7, 11, 5, 14],
+  "tees": {
+    "back": { "name": "Black", "rating": 71.7, "slope": 133, "yards": 6532 },
+    "middle": { "name": "Gold", "rating": 69.3, "slope": 128, "yards": 6130 }
+  }
+}

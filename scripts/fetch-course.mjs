@@ -1,7 +1,7 @@
 // Downloads Cedar Crest's layout from OpenStreetMap and its elevation from
 // USGS 3DEP, then writes public/data/course.json and public/data/terrain.bin.
 // Run with: npm run fetch-course
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
 
 const COURSE_NAME = 'Cedar Crest Golf Course';
 // Search area (lon/lat) that contains the whole course.
@@ -114,43 +114,88 @@ function inside(pt, ring) {
 
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
-// ---------- TIFF (uncompressed float32) ----------
-function readTiffF32(buf) {
-  const le = buf.toString('ascii', 0, 2) === 'II';
-  const u16 = (o) => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
-  const u32 = (o) => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
-  const ifd = u32(4);
-  const n = u16(ifd);
-  const tags = {};
-  for (let i = 0; i < n; i++) {
-    const e = ifd + 2 + i * 12;
-    const tag = u16(e), type = u16(e + 2), count = u32(e + 4);
-    const size = type === 3 ? 2 : 4;
-    const vals = [];
-    const base = count * size > 4 ? u32(e + 8) : e + 8;
-    for (let k = 0; k < count; k++) vals.push(size === 2 ? u16(base + k * 2) : u32(base + k * 4));
-    tags[tag] = vals;
+function polyArea(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+  return Math.abs(a / 2);
+}
+
+function convexHull(points) {
+  const p = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const q of p) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
+  for (const q of p.reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
+// ---------- tree canopy ----------
+// Heights in whole meters on the same 2 m grid as the terrain (row 0 = south).
+async function fetchCanopy(cols, rows, bounds) {
+  const { fromUrl } = await import('geotiff');
+  const R = 6378137;
+  const merc = (lat, lon) => [(R * lon * Math.PI) / 180, R * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360))];
+  // Tiles are named by zoom-9 quadkey.
+  const z = 9, n = 2 ** z;
+  const tx = Math.floor(((origin.lon + 180) / 360) * n);
+  const ty = Math.floor(((1 - Math.log(Math.tan((origin.lat * Math.PI) / 180) + 1 / Math.cos((origin.lat * Math.PI) / 180)) / Math.PI) / 2) * n);
+  let key = '';
+  for (let i = z; i > 0; i--) key += String(((tx >> (i - 1)) & 1) + (((ty >> (i - 1)) & 1) << 1));
+  const tif = await fromUrl(`https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float/chm/${key}.tif`);
+  const img = await tif.getImage();
+  const [x0, , , y1] = img.getBoundingBox();
+  const res = img.getResolution()[0];
+  const ll = (x, y) => [origin.lat + y / ky, origin.lon + x / kx];
+  const [ax, ay] = merc(...ll(bounds.minX, bounds.minY));
+  const [bx, by] = merc(...ll(bounds.maxX, bounds.maxY));
+  const win = [Math.floor((ax - x0) / res) - 2, Math.floor((y1 - by) / res) - 2, Math.ceil((bx - x0) / res) + 2, Math.ceil((y1 - ay) / res) + 2];
+  const [data] = await img.readRasters({ window: win });
+  const w = win[2] - win[0];
+  const out = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const [mx, my] = merc(...ll(bounds.minX + c * CELL, bounds.minY + r * CELL));
+    const px = Math.round((mx - x0) / res) - win[0], py = Math.round((y1 - my) / res) - win[1];
+    out[r * cols + c] = data[py * w + px] ?? 0;
   }
-  const width = tags[256][0], height = tags[257][0];
-  if ((tags[259]?.[0] ?? 1) !== 1) throw new Error('compressed TIFF not supported');
-  const offsets = tags[273] ?? tags[324], counts = tags[279] ?? tags[325];
-  const tiled = !!tags[324];
-  const out = new Float32Array(width * height);
-  const rd = (o) => (le ? buf.readFloatLE(o) : buf.readFloatBE(o));
-  if (!tiled) {
-    let idx = 0;
-    for (let s = 0; s < offsets.length; s++) for (let b = 0; b < counts[s]; b += 4) if (idx < out.length) out[idx++] = rd(offsets[s] + b);
-  } else {
-    const tw = tags[322][0], th = tags[323][0];
-    const across = Math.ceil(width / tw);
-    offsets.forEach((off, t) => {
-      const tx = (t % across) * tw, ty = Math.floor(t / across) * th;
-      for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
-        if (tx + x < width && ty + y < height) out[(ty + y) * width + tx + x] = rd(off + (y * tw + x) * 4);
+  return out;
+}
+
+// ---------- elevation ----------
+/**
+ * Elevation (m) on a regular local grid. Asks for a little more than needed (the service
+ * may nudge the edges) and samples each grid point from where the returned image says
+ * its pixels really are, so the grid lines up exactly.
+ */
+async function elevationTile(x0, y0, w, h, cell) {
+  const { fromArrayBuffer } = await import('geotiff');
+  const PAD = 4;
+  const bx0 = x0 - PAD * cell, by0 = y0 - PAD * cell, bx1 = x0 + (w - 1 + PAD) * cell, by1 = y0 + (h - 1 + PAD) * cell;
+  const url = 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?' + new URLSearchParams({
+    bbox: [origin.lon + bx0 / kx, origin.lat + by0 / ky, origin.lon + bx1 / kx, origin.lat + by1 / ky].join(','), bboxSR: '4326', imageSR: '4326',
+    size: `${w + 2 * PAD},${h + 2 * PAD}`, format: 'tiff', pixelType: 'F32', noDataInterpretation: 'esriNoDataMatchAny',
+    interpolation: 'RSP_BilinearInterpolation', f: 'image',
+  });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const buf = await get(url, 'buf');
+      const img = await (await fromArrayBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))).getImage();
+      const [ras] = await img.readRasters();
+      const [ix0, , , iy1] = img.getBoundingBox();
+      const [rx, ry] = img.getResolution();
+      const iw = img.getWidth(), ih = img.getHeight();
+      const out = new Float32Array(w * h); // row 0 = south
+      for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
+        const lon = origin.lon + (x0 + c * cell) / kx, lat = origin.lat + (y0 + r * cell) / ky;
+        const fx = (lon - ix0) / rx - 0.5, fy = (lat - iy1) / ry - 0.5;
+        const cx = Math.max(0, Math.min(iw - 2, Math.floor(fx))), cy = Math.max(0, Math.min(ih - 2, Math.floor(fy)));
+        const ax = Math.min(1, Math.max(0, fx - cx)), ay = Math.min(1, Math.max(0, fy - cy));
+        const v = (i, j) => ras[j * iw + i];
+        out[r * w + c] = (v(cx, cy) * (1 - ax) + v(cx + 1, cy) * ax) * (1 - ay) + (v(cx, cy + 1) * (1 - ax) + v(cx + 1, cy + 1) * ax) * ay;
       }
-    });
+      return out;
+    } catch (e) { console.warn(`  elevation tile retry (${e.message})`); await sleep(2000 * (attempt + 1)); }
   }
-  return { width, height, data: out };
+  throw new Error('elevation tile failed');
 }
 
 // ---------- main ----------
@@ -285,34 +330,112 @@ async function main() {
     maxY: Math.ceil(Math.max(...allPts.map((p) => p[1])) + M),
   };
 
+  // Landmarks for finding your way: buildings (the clubhouse), parking and named streets
+  const inBounds = (pt, m = 0) => pt[0] > bounds.minX - m && pt[0] < bounds.maxX + m && pt[1] > bounds.minY - m && pt[1] < bounds.maxY + m;
+  const buildings = [];
+  for (const [id, w] of ways) {
+    const b = w.tags.building;
+    if (!b || ['house', 'garage', 'shed', 'roof'].includes(b) || w.nds[0] !== w.nds[w.nds.length - 1]) continue;
+    const ring = ringXY(w.nds);
+    if (ring.length < 4 || !inBounds(centroid(ring))) continue;
+    buildings.push({ ring, name: w.tags.name || null, levels: +w.tags['building:levels'] || null, area: Math.round(polyArea(ring)) });
+  }
+  const firstTee = holes[0].tees[0].center, lastGreen = holes[holes.length - 1].pin;
+  const club = buildings
+    .filter((b) => Math.min(dist(centroid(b.ring), firstTee), dist(centroid(b.ring), lastGreen)) < 150)
+    .sort((a, b) => b.area - a.area)[0];
+  if (club && !club.name) { club.name = 'Clubhouse'; club.clubhouse = true; }
+  const parking = [];
+  for (const [type, map] of [['way', ways], ['relation', rels]]) {
+    for (const [, e] of map) {
+      if (e.tags.amenity !== 'parking') continue;
+      const rings = type === 'way' ? areaRings(e, 'way') : areaRings(e, 'relation').outer;
+      if (rings[0]?.length > 3 && inBounds(centroid(rings[0]))) parking.push(rings[0]);
+    }
+  }
+  // Lots that are only mapped by their driving lanes: outline the lanes.
+  const aisles = [...ways.values()].filter((w) => w.tags.service === 'parking_aisle').map((w) => ringXY(w.nds)).filter((l) => l.length > 1 && inBounds(centroid(l)));
+  const groups = [];
+  for (const a of aisles) {
+    const g = groups.find((grp) => grp.some((b) => dist(centroid(b), centroid(a)) < 40));
+    if (g) g.push(a); else groups.push([a]);
+  }
+  for (const g of groups) {
+    const hull = convexHull(g.flat());
+    const c = centroid(hull);
+    parking.push(hull.map((p) => { const d = dist(p, c) || 1; return [round(p[0] + ((p[0] - c[0]) / d) * 8), round(p[1] + ((p[1] - c[1]) / d) * 8)]; }));
+  }
+  const ROADS = new Set(['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'secondary_link', 'tertiary_link', 'living_street']);
+  const roads = [];
+  for (const [, w] of ways) {
+    if (!ROADS.has(w.tags.highway)) continue;
+    const line = ringXY(w.nds);
+    if (line.length > 1 && line.some((p) => inBounds(p, 30))) roads.push({ name: w.tags.name || '', kind: w.tags.highway, line });
+  }
+  console.log(`Landmarks: ${buildings.length} buildings${club ? ' (clubhouse found)' : ''}, ${parking.length} parking lots, ${roads.length} streets`);
+
   // Terrain from USGS 3DEP
   const cols = Math.round((bounds.maxX - bounds.minX) / CELL) + 1;
   const rows = Math.round((bounds.maxY - bounds.minY) / CELL) + 1;
-  const lonMin = origin.lon + bounds.minX / kx, lonMax = origin.lon + (bounds.minX + (cols - 1) * CELL) / kx;
-  const latMin = origin.lat + bounds.minY / ky, latMax = origin.lat + (bounds.minY + (rows - 1) * CELL) / ky;
-  // exportImage treats bbox as pixel edges; widen by half a cell so samples land on grid points.
-  const hx = CELL / 2 / kx, hy = CELL / 2 / ky;
-  console.log(`Downloading elevation grid ${cols}×${rows} at ${CELL} m…`);
-  const elevUrl = 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?' + new URLSearchParams({
-    bbox: [lonMin - hx, latMin - hy, lonMax + hx, latMax + hy].join(','), bboxSR: '4326', imageSR: '4326',
-    size: `${cols},${rows}`, format: 'tiff', pixelType: 'F32', noDataInterpretation: 'esriNoDataMatchAny',
-    interpolation: 'RSP_BilinearInterpolation', f: 'image',
-  });
-  const tif = readTiffF32(await get(elevUrl, 'buf'));
-  if (tif.width !== cols || tif.height !== rows) throw new Error(`terrain size mismatch ${tif.width}x${tif.height}`);
-  // TIFF rows go north→south; store south→north so row index grows with y.
-  let minH = Infinity, maxH = -Infinity;
-  for (const v of tif.data) if (v > -1000) { minH = Math.min(minH, v); maxH = Math.max(maxH, v); }
-  const grid = new Uint16Array(cols * rows);
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    let v = tif.data[(rows - 1 - r) * cols + c];
-    if (!(v > -1000)) v = minH;
-    grid[r * cols + c] = Math.round((v - minH) * 100);
+  // Download in small tiles: for large areas the elevation service quietly returns a
+  // smoothed surface (it was ~0.75 m off near greens); small tiles come back at full
+  // 3DEP lidar detail, within ~5 cm of USGS point values.
+  const TILE_PX = 48;
+  const data = new Float32Array(cols * rows).fill(NaN); // row 0 = south
+  const tilesX = Math.ceil(cols / TILE_PX), tilesY = Math.ceil(rows / TILE_PX);
+  console.log(`Downloading elevation grid ${cols}×${rows} at ${CELL} m in ${tilesX * tilesY} tiles…`);
+  for (let ty = 0; ty < tilesY; ty++) for (let tx = 0; tx < tilesX; tx++) {
+    const c0 = tx * TILE_PX, r0 = ty * TILE_PX;
+    const w = Math.min(cols, c0 + TILE_PX) - c0, h = Math.min(rows, r0 + TILE_PX) - r0;
+    const tile = await elevationTile(bounds.minX + c0 * CELL, bounds.minY + r0 * CELL, w, h, CELL);
+    for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) data[(r0 + r) * cols + c0 + c] = tile[r * w + c];
   }
+  let minH = Infinity, maxH = -Infinity;
+  for (const v of data) if (v > -1000) { minH = Math.min(minH, v); maxH = Math.max(maxH, v); }
+  const grid = new Uint16Array(cols * rows);
+  for (let i = 0; i < data.length; i++) grid[i] = Math.round(((data[i] > -1000 ? data[i] : minH) - minH) * 100);
   console.log(`Elevation ${minH.toFixed(1)}–${maxH.toFixed(1)} m`);
+
+  // 1 m elevation on and around every green, for putting.
+  console.log('Downloading 1 m elevation for the greens…');
+  const greenPatches = [];
+  const greenParts = [];
+  let gOffset = 0;
+  for (const h of holes) {
+    const g = features.find((f) => f.id === h.greenId);
+    if (!g) continue;
+    const xs = g.rings[0].map((p) => p[0]), ys = g.rings[0].map((p) => p[1]);
+    const M = 10;
+    const x0 = Math.floor(Math.min(...xs) - M), y0 = Math.floor(Math.min(...ys) - M);
+    const w = Math.ceil(Math.max(...xs) + M) - x0 + 1, hgt = Math.ceil(Math.max(...ys) + M) - y0 + 1;
+    const patch = await elevationTile(x0, y0, w, hgt, 1);
+    const u16 = new Uint16Array(w * hgt);
+    for (let i = 0; i < patch.length; i++) u16[i] = Math.max(0, Math.round((patch[i] - minH) * 100));
+    greenParts.push(u16);
+    greenPatches.push({ ref: h.ref, minX: x0, minY: y0, cols: w, rows: hgt, cell: 1, offset: gOffset });
+    gOffset += u16.length;
+  }
+  const greensBin = new Uint16Array(gOffset);
+  { let o = 0; for (const part of greenParts) { greensBin.set(part, o); o += part.length; } }
+
+  // Tree canopy height (Meta & WRI 1 m global canopy height map, derived from satellite imagery)
+  console.log('Downloading tree canopy heights…');
+  const canopy = await fetchCanopy(cols, rows, bounds);
+  let treeCells = 0;
+  for (const v of canopy) if (v >= 4) treeCells++;
+  console.log(`Trees (4 m+) cover ${((100 * treeCells) / canopy.length).toFixed(0)}% of the area`);
+
+  // Scorecard corrections (par, stroke index, tee names and ratings).
+  const overrides = JSON.parse(await readFile(new URL('./course-overrides.json', import.meta.url), 'utf8'));
+  for (const h of holes) {
+    if (overrides.par?.[h.ref]) h.par = overrides.par[h.ref];
+    if (overrides.strokeIndex?.[h.ref - 1]) h.handicap = overrides.strokeIndex[h.ref - 1];
+  }
 
   await mkdir(OUT, { recursive: true });
   await writeFile(new URL('terrain.bin', OUT), Buffer.from(grid.buffer));
+  await writeFile(new URL('canopy.bin', OUT), Buffer.from(canopy.buffer));
+  await writeFile(new URL('greens.bin', OUT), Buffer.from(greensBin.buffer));
   const course = {
     name: 'Cedar Crest',
     fetched: new Date().toISOString().slice(0, 10),
@@ -320,8 +443,12 @@ async function main() {
     origin, metersPerDeg: { x: kx, y: ky },
     bounds,
     terrain: { file: 'terrain.bin', cols, rows, cell: CELL, minX: bounds.minX, minY: bounds.minY, minH, maxH, scale: 0.01 },
+    greens: { file: 'greens.bin', scale: 0.01, patches: greenPatches },
+    canopy: { file: 'canopy.bin', source: 'Meta & World Resources Institute, High Resolution Canopy Height Maps (CC BY 4.0)' },
     boundary: boundaryRings,
     holes, features, paths, trees,
+    landmarks: { buildings, parking, roads },
+    tees: overrides.tees ?? {},
   };
   await writeFile(new URL('course.json', OUT), JSON.stringify(course));
   console.log('Wrote public/data/course.json and terrain.bin');
