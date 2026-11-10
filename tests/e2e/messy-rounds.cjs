@@ -33,7 +33,7 @@ async function mark(p, where, club) { await click(p, '[data-act=simnow]'); await
     for (let i = 0; i < 9; i++) { await click(p, '[data-act=savehole]'); await p.waitForTimeout(400); }
     await p.waitForTimeout(500);
     await click(p, '[data-act=closemodal]').catch(() => {});
-    await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {});
+    await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {}); await click(p, '[data-act=closemodal]').catch(() => {});
     const s = await st(p); const r = s.rounds[0];
     const refs = Object.keys(r.holes).map(Number).sort((a, c) => a - c);
     check('Start on 10, play 9 holes', r.finished && refs.join() === '10,11,12,13,14,15,16,17,18', `holes ${refs.join()}`);
@@ -76,9 +76,9 @@ async function mark(p, where, club) { await click(p, '[data-act=simnow]'); await
     await click(p, '[data-act=savehole]'); await p.waitForTimeout(300);
     for (let i = 0; i < 3; i++) await click(p, '#top [data-act=next]');
     await click(p, '[data-act=savehole]'); await p.waitForTimeout(300);
-    await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {});
+    await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {}); await click(p, '[data-act=closemodal]').catch(() => {});
     await click(p, '[data-tab=play]'); await click(p, '[data-act=startround]'); await click(p, '[data-act=savehole]'); await p.waitForTimeout(300);
-    await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {});
+    await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {}); await click(p, '[data-act=closemodal]').catch(() => {});
     const s = await st(p);
     check('Skipped holes are left out, not scored', Object.keys(s.rounds[0].holes).join() === '1,5', Object.keys(s.rounds[0].holes).join());
     check('Two rounds on the same day are kept separately', s.rounds.length === 2 && s.rounds[0].id !== s.rounds[1].id);

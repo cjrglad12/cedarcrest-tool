@@ -403,3 +403,60 @@ describe('no handicap yet', () => {
     expect(est(70)).toBe(0);
   });
 });
+
+describe('insights', () => {
+  it('recaps a round and picks the biggest leak', async () => {
+    const { roundRecap } = await import('../src/insights');
+    const base = { shots: [], sg: { ott: 0, app: 0, arg: 0, putt: 0 }, firstPuttFt: null, firstPuttEstimated: false, followedPlan: null, fairway: null, fairwayMiss: null, missedGreen: null, penalties: 0 };
+    const holes = [
+      { ...base, ref: 1, par: 4, score: 4, putts: 2, gir: true },
+      { ...base, ref: 2, par: 4, score: 6, putts: 3, gir: false },
+      { ...base, ref: 3, par: 3, score: 5, putts: 4, gir: true },
+      { ...base, ref: 4, par: 5, score: 4, putts: 1, gir: true },
+    ];
+    const r = roundRecap({ round: {} as any, holes, score: 19, par: 16, putts: 10, sg: base.sg, fairways: [0, 0], gir: [3, 4] });
+    expect(r.headline).toContain('19 (+3)');
+    expect(r.cost[0].label).toContain('Three-putts');
+    expect(r.cost[0].strokes).toBe(3);
+    expect(r.focus).toContain('lag putts');
+    expect(r.good[0]).toBe('Under par on 4');
+  });
+  it('says where to miss on the water hole', async () => {
+    const { whereToMiss } = await import('../src/insights');
+    const h = course.hole(3);
+    const m = whereToMiss({ course, hole: h, from: teeFor(h, 'middle').center, lie: 'tee', pin: h.pin, cond: CALM, bag: freshState().bag, handicap: 15 });
+    expect(m).not.toBeNull();
+    expect(m!.best).not.toBe(m!.worst);
+  });
+  it('favors the left side off the 1st tee, where trees block the right', async () => {
+    const { whichSide } = await import('../src/insights');
+    const h = course.hole(1), t = teeFor(h, 'middle').center;
+    const c = { course, hole: h, from: t, lie: 'tee' as const, pin: h.pin, cond: CALM, bag: freshState().bag, handicap: 15 };
+    const a = whichSide(c, suggest(c, 1)[0].aim);
+    expect(a?.favor).toBe('left');
+  });
+});
+
+describe('blocked by trees', () => {
+  it('flags a ball behind trees and gives a way out; open fairway is not blocked', async () => {
+    const { blockedPlay } = await import('../src/insights');
+    const bag = freshState().bag;
+    let blocked = 0, open = 0;
+    for (const h of course.holes) {
+      if (h.par < 4) continue;
+      const t = teeFor(h, 'middle').center;
+      const mid = course.alongLine(h, t, dist(t, h.pin) * 0.5);
+      if (course.lieAt(mid, h) === 'fairway' && !blockedPlay({ course, hole: h, from: mid, lie: 'fairway', pin: h.pin, cond: CALM, bag, handicap: 15 })) open++;
+      // 35 m off the line, look for a spot under or behind trees
+      for (const side of [-1, 1]) {
+        const p: [number, number] = [mid[0] + side * 35, mid[1]];
+        const lie = course.lieAt(p, h);
+        if (lie === 'ob' || lie === 'water' || lie === 'green') continue;
+        const b = blockedPlay({ course, hole: h, from: p, lie, pin: h.pin, cond: CALM, bag, handicap: 15 });
+        if (b) { blocked++; expect(b.yds).toBeGreaterThan(0); }
+      }
+    }
+    expect(open).toBeGreaterThan(5);
+    expect(blocked).toBeGreaterThan(3);
+  });
+});
