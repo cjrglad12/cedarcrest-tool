@@ -192,3 +192,26 @@ ul.plain li { margin: 3px 0; }
 .miss.blocked { background: color-mix(in srgb, var(--loss) 12%, var(--panel)); }
 ol.plain { margin: 6px 0 12px; padding-left: 20px; }
 ol.plain li { margin: 5px 0; }
+
+.decision {
+  background: #f4f1e4;
+  color: #142018;
+  border-radius: 16px;
+  padding: 10px 14px 12px;
+  margin: 0 0 8px;
+}
+.decision .plays { display: flex; align-items: baseline; gap: 8px; }
+.decision .plays b { font-size: 64px; line-height: 0.9; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; font-weight: 760; }
+.decision .plays span, .decision .ends, .decision .windline, .decision .extra { color: #3e5346; font-size: 15px; font-weight: 650; }
+.decision .ends { display: flex; justify-content: space-between; margin-top: 2px; }
+.decision .clubline { margin-top: 8px; font-size: 20px; line-height: 1.25; font-weight: 750; color: #142018; }
+.decision .miss { background: transparent; padding: 6px 0 0; margin: 0; color: #142018; font-size: 16px; }
+.decision .windline, .decision .extra { margin-top: 4px; }
+.readline { background: #f4f1e4; color: #142018; border-radius: 16px; padding: 12px 14px; margin-bottom: 8px; }
+.readline b { display: block; font-size: 28px; line-height: 1.15; }
+.readline span { display: block; margin-top: 4px; font-size: 17px; font-weight: 700; }
+.where { text-align: center; margin: 0 0 6px; color: var(--ink); }
+#sheet { max-height: 58vh; }
+#sheet.more { max-height: 74vh; }
+.seg { flex-wrap: wrap; }
+button.wide, .btn.wide { width: 100%; }

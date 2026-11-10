@@ -21,7 +21,7 @@ describe('course data', () => {
       expect(h.tees.length).toBeGreaterThan(0);
       expect(h.greenId).toBeTruthy();
       expect([3, 4, 5]).toContain(h.par);
-      const len = teeFor(h, 'middle').lengthYds;
+      const len = teeFor(h, 'gold').lengthYds;
       expect(len).toBeGreaterThan(h.par === 3 ? 100 : 250);
       expect(len).toBeLessThan(h.par === 3 ? 260 : 650);
     }
@@ -29,7 +29,7 @@ describe('course data', () => {
   it('finds lies: the pin is on the green and the tee is fairway-like', () => {
     for (const h of course.holes) {
       expect(course.lieAt(h.pin, h)).toBe('green');
-      expect(course.lieAt(teeFor(h, 'middle').center, h)).not.toBe('ob');
+      expect(course.lieAt(teeFor(h, 'gold').center, h)).not.toBe('ob');
     }
   });
   it('has sensible terrain heights', () => {
@@ -40,7 +40,7 @@ describe('course data', () => {
   });
   it('front of green is closer than the back', () => {
     for (const h of course.holes) {
-      const g = course.greenDistances(h, teeFor(h, 'middle').center);
+      const g = course.greenDistances(h, teeFor(h, 'gold').center);
       expect(g.front).toBeLessThan(g.back);
       expect(g.pin).toBeGreaterThan(g.front - 5);
     }
@@ -124,11 +124,11 @@ describe('advice', () => {
   const state = freshState();
   const ctxFor = (ref: number) => {
     const h = course.hole(ref);
-    return { course, hole: h, from: teeFor(h, 'middle').center, lie: 'tee' as const, pin: h.pin, cond: CALM, bag: state.bag, handicap: 15 };
+    return { course, hole: h, from: teeFor(h, 'gold').center, lie: 'tee' as const, pin: h.pin, cond: CALM, bag: state.bag, handicap: 15 };
   };
   it('suggests a reasonable club on a par 3', () => {
     const h = course.hole(9);
-    const yds = toYds(dist(teeFor(h, 'middle').center, h.pin));
+    const yds = toYds(dist(teeFor(h, 'gold').center, h.pin));
     const opts = suggest(ctxFor(9), 3);
     expect(opts.length).toBeGreaterThan(0);
     const club = DEFAULT_BAG.find((c) => c.name === opts[0].club)!;
@@ -159,7 +159,7 @@ describe('advice', () => {
 
 describe('stats', () => {
   const h = course.hole(4);
-  const t = teeFor(h, 'middle').center;
+  const t = teeFor(h, 'gold').center;
   const lerp = (k: number): [number, number] => [t[0] + (h.pin[0] - t[0]) * k, t[1] + (h.pin[1] - t[1]) * k];
   const rec: HoleRec = {
     ref: 4, teeId: '', pin: h.pin, greenMark: lerp(0.985), putts: 2, holedFromOff: false, followedPlan: true, done: true,
@@ -190,7 +190,7 @@ describe('stats', () => {
   });
   it('builds club distances and uses them after 5 shots', () => {
     const s = freshState();
-    s.rounds = Array.from({ length: 5 }, (_, i) => ({ id: String(i), date: `2026-10-0${i + 1}`, teeSet: 'middle' as const, conditions: CALM, finished: true, holes: { 4: rec } }));
+    s.rounds = Array.from({ length: 5 }, (_, i) => ({ id: String(i), date: `2026-10-0${i + 1}`, teeSet: 'gold' as const, conditions: CALM, finished: true, holes: { 4: rec } }));
     const st = clubStats(course, s);
     const drv = st.find((x) => x.club === 'Driver')!;
     expect(drv.n).toBe(5);
@@ -204,7 +204,7 @@ describe('store', () => {
   it('migrates partial saved data', () => {
     const s = migrate({ rounds: [], settings: { handicap: 9 } as any });
     expect(s.settings.handicap).toBe(9);
-    expect(s.settings.teeSet).toBe('middle');
+    expect(s.settings.teeSet).toBe('gold');
     expect(s.bag.length).toBe(DEFAULT_BAG.length);
   });
 });
@@ -273,7 +273,7 @@ describe('slope under the ball', () => {
   it('reads uphill along the line and the opposite way back', () => {
     // Find a sloped spot on hole 1 and check the reading flips when you turn around.
     const h = course.hole(1);
-    const t = teeFor(h, 'middle').center;
+    const t = teeFor(h, 'gold').center;
     let found = false;
     for (let k = 0.2; k < 0.9 && !found; k += 0.05) {
       const p = course.alongLine(h, t, dist(t, h.pin) * k);
@@ -424,13 +424,13 @@ describe('insights', () => {
   it('says where to miss on the water hole', async () => {
     const { whereToMiss } = await import('../src/insights');
     const h = course.hole(3);
-    const m = whereToMiss({ course, hole: h, from: teeFor(h, 'middle').center, lie: 'tee', pin: h.pin, cond: CALM, bag: freshState().bag, handicap: 15 });
+    const m = whereToMiss({ course, hole: h, from: teeFor(h, 'gold').center, lie: 'tee', pin: h.pin, cond: CALM, bag: freshState().bag, handicap: 15 });
     expect(m).not.toBeNull();
     expect(m!.best).not.toBe(m!.worst);
   });
   it('favors the left side off the 1st tee, where trees block the right', async () => {
     const { whichSide } = await import('../src/insights');
-    const h = course.hole(1), t = teeFor(h, 'middle').center;
+    const h = course.hole(1), t = teeFor(h, 'gold').center;
     const c = { course, hole: h, from: t, lie: 'tee' as const, pin: h.pin, cond: CALM, bag: freshState().bag, handicap: 15 };
     const a = whichSide(c, suggest(c, 1)[0].aim);
     expect(a?.favor).toBe('left');
@@ -444,7 +444,7 @@ describe('blocked by trees', () => {
     let blocked = 0, open = 0;
     for (const h of course.holes) {
       if (h.par < 4) continue;
-      const t = teeFor(h, 'middle').center;
+      const t = teeFor(h, 'gold').center;
       const mid = course.alongLine(h, t, dist(t, h.pin) * 0.5);
       if (course.lieAt(mid, h) === 'fairway' && !blockedPlay({ course, hole: h, from: mid, lie: 'fairway', pin: h.pin, cond: CALM, bag, handicap: 15 })) open++;
       // 35 m off the line, look for a spot under or behind trees

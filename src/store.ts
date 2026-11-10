@@ -66,7 +66,7 @@ export interface Round {
   trackShots?: boolean; // false = quick scoring by default
 }
 
-export type TeeSet = 'back' | 'middle' | 'forward';
+export type TeeSet = 'black' | 'gold' | 'silver' | 'ruby';
 
 export interface Settings {
   handicap: number;
@@ -109,7 +109,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'middle', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: true, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false, grainToward: null, stimpToday: null, sgBaseline: 'me', installDismissed: false, simple: false, bigText: false },
+    settings: { handicap: 15, teeSet: 'gold', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: false, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false, grainToward: null, stimpToday: null, sgBaseline: 'me', installDismissed: false, simple: true, bigText: false },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},
@@ -138,9 +138,16 @@ export function loadState(storage: Pick<Storage, 'getItem' | 'setItem'> = localS
   }
 }
 
+const LEGACY_TEE: Record<string, TeeSet> = { back: 'black', middle: 'gold', forward: 'ruby', black: 'black', gold: 'gold', silver: 'silver', ruby: 'ruby' };
+export function normalizeTee(v: unknown): TeeSet {
+  return LEGACY_TEE[String(v)] ?? 'gold';
+}
+
 export function migrate(s: Partial<State>): State {
   const base = freshState();
-  return { ...base, ...s, settings: { ...base.settings, ...(s.settings ?? {}) }, bag: s.bag?.length ? s.bag : base.bag } as State;
+  const settings = { ...base.settings, ...(s.settings ?? {}), teeSet: normalizeTee(s.settings?.teeSet ?? base.settings.teeSet) };
+  const rounds = (s.rounds ?? base.rounds).map((r) => ({ ...r, teeSet: normalizeTee(r.teeSet) }));
+  return { ...base, ...s, settings, rounds, bag: s.bag?.length ? s.bag : base.bag } as State;
 }
 
 /** Called when the phone refuses to save (for example, storage is full). */

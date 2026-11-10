@@ -9,7 +9,7 @@ it.skipIf(!process.env.PRINT)('personas', () => {
   const data = JSON.parse(readFileSync('public/data/course.json', 'utf8'));
   const raw = readFileSync('public/data/terrain.bin'), can = readFileSync('public/data/canopy.bin'), gr = readFileSync('public/data/greens.bin');
   const course = new Course(data, new Uint16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2), new Uint8Array(can.buffer, can.byteOffset, can.byteLength), new Uint16Array(gr.buffer, gr.byteOffset, gr.byteLength / 2));
-  const personas: [string, number, number, 'back' | 'middle' | 'forward'][] = [['Beginner', 36, 175, 'forward'], ['Senior', 22, 190, 'forward'], ['Mid 15', 15, 230, 'middle'], ['Low 3', 3, 265, 'back'], ['Pro +3', -3, 300, 'back']];
+  const personas: [string, number, number, 'black' | 'gold' | 'ruby'][] = [['Beginner', 36, 175, 'ruby'], ['Senior', 22, 190, 'ruby'], ['Mid 15', 15, 230, 'gold'], ['Low 3', 3, 265, 'black'], ['Pro +3', -3, 300, 'black']];
   for (const [name, hcp, drv, tees] of personas) {
     const st = freshState();
     st.settings.handicap = hcp;

@@ -11,7 +11,7 @@ it.skipIf(!process.env.PRINT)('prints plans', () => {
   const bag = freshState().bag;
   let tot = 0;
   for (const h of course.holes) {
-    const t = teeFor(h, 'middle').center;
+    const t = teeFor(h, 'gold').center;
     const p = buildPlan({ course, hole: h, from: t, lie: 'tee', pin: h.pin, cond: CALM, bag, handicap: 15 });
     let from = t;
     const s = p.steps.map((x) => { const d = Math.round(toYds(dist(from, x.target))); from = x.target; return `${x.club} ${d} (${course.lieAt(x.target, h)}${course.treeAt(...x.target) ? ' tree' + course.treeAt(...x.target) : ''}, off ${course.offLine(x.target, h).toFixed(0)}m)`; }).join(' → ');

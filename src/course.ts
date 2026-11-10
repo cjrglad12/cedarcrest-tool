@@ -398,10 +398,9 @@ function raySegment(o: XY, d: XY, a: XY, b: XY): number | null {
   return t >= 0 && u >= 0 && u <= 1 ? t : null;
 }
 
-/** Default tee for a set: back = longest, forward = shortest, middle = median. */
-export function teeFor(hole: Hole, set: 'back' | 'middle' | 'forward'): TeeBox {
+/** Tee box used to stand on the map. Card yardages are separate. Longest box is Black. */
+export function teeFor(hole: Hole, set: 'black' | 'gold' | 'silver' | 'ruby'): TeeBox {
   const t = hole.tees;
-  if (set === 'back') return t[0];
-  if (set === 'forward') return t[t.length - 1];
-  return t[Math.floor((t.length - 1) / 2)];
+  const idx = set === 'black' ? 0 : set === 'gold' ? 1 : set === 'silver' ? Math.min(2, t.length - 1) : t.length - 1;
+  return t[Math.min(idx, Math.max(0, t.length - 1))]!;
 }
