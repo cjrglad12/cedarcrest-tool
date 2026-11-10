@@ -1,6 +1,6 @@
 // Turning rounds into advice: handicap estimate, round recap, and where to miss.
-import { XY, bearing, fromBearing, pointInFeature } from './course';
-import { Ctx, outcome, suggest } from './advice';
+import { XY, bearing, fromBearing, pointInFeature, dist, toYds, YD } from './course';
+import { Ctx, outcome, suggest, treeStop } from './advice';
 import type { RoundView } from './stats';
 import { CATEGORY_LABEL, Category } from './sg';
 
@@ -63,7 +63,7 @@ const FOCUS_TIP: Record<Category, string> = {
 };
 
 export type Side = 'short' | 'long' | 'left' | 'right';
-export interface MissAdvice { best: Side; worst: Side; why: string; spread: number }
+export interface MissAdvice { best: Side; worst: Side; why: string; spread: number; points: Record<Side, XY> }
 
 /**
  * Where to miss the green from here: compares how many strokes it usually takes
@@ -75,6 +75,7 @@ export function whereToMiss(ctx: Ctx): MissAdvice | null {
   const toward = bearing(ctx.from, ctx.pin);
   const dirs: Record<Side, number> = { short: toward + 180, long: toward, left: toward - 90, right: toward + 90 };
   const res = {} as Record<Side, { e: number; lies: string[] }>;
+  const points = {} as Record<Side, XY>;
   for (const side of Object.keys(dirs) as Side[]) {
     let sum = 0;
     const lies: string[] = [];
@@ -84,6 +85,7 @@ export function whereToMiss(ctx: Ctx): MissAdvice | null {
       for (let m = 1; m < 60; m += 1) { const p = fromBearing(ctx.pin, dirs[side] + off, m); if (!pointInFeature(p, g)) break; edge = p; }
       const p = fromBearing(edge, dirs[side] + off, 9);
       const o = outcome(ctx, p);
+      if (off === 0) points[side] = p;
       sum += o.e; lies.push(o.lie);
     }
     res[side] = { e: sum / 3, lies };
@@ -94,10 +96,10 @@ export function whereToMiss(ctx: Ctx): MissAdvice | null {
   if (spread < 0.15) return null;
   const count = (l: string) => res[worst].lies.filter((x) => x === l).length;
   const why = count('water') ? 'water' : count('ob') ? 'out of bounds' : count('recovery') ? 'trees' : count('sand') ? 'sand' : 'a tough up-and-down';
-  return { best, worst, why, spread };
+  return { best, worst, why, spread, points };
 }
 
-export interface SideAdvice { favor: 'left' | 'right'; why: string; spread: number }
+export interface SideAdvice { favor: 'left' | 'right'; why: string; spread: number; target: XY; brg: number }
 
 /**
  * For a tee shot or layup aimed at `target`: is it better to finish left or right of it?
@@ -129,5 +131,25 @@ export function whichSide(ctx: Ctx, target: XY): SideAdvice | null {
   if (spread < 0.07) return null;
   const why = bad.lie === 'water' ? 'water' : bad.lie === 'ob' ? 'out of bounds' : bad.lie === 'recovery' ? "you're under the trees" : bad.lie === 'sand' ? 'sand'
     : bad.trouble - good.trouble > 0.06 ? 'trees block your line to the green' : 'a worse angle and lie for the next shot';
-  return { favor, why, spread };
+  return { favor, why, spread, target, brg };
+}
+
+export interface BlockedPlay { club: string; yds: number; dir: 'left' | 'right' | 'straight'; leave: number; aim: XY }
+
+/**
+ * Are trees between you and the green? Checks the flight of a normal shot on the direct
+ * line. If it's blocked, returns the best play from here (which already accounts for the trees).
+ */
+export function blockedPlay(ctx: Ctx): BlockedPlay | null {
+  const d = dist(ctx.from, ctx.pin);
+  if (d < 25 || ctx.lie === 'tee' || ctx.lie === 'green') return null;
+  const longest = Math.max(0, ...ctx.bag.filter((c) => c.on && c.name !== 'Driver').map((c) => c.yds)) * YD;
+  const reach = Math.min(d, longest || d);
+  const direct = bearing(ctx.from, ctx.pin);
+  const apex = ctx.lie === 'recovery' ? 5 : Math.max(8, Math.min(30, reach * 0.13));
+  if (!treeStop(ctx, fromBearing(ctx.from, direct, reach), apex)) return null;
+  const o = suggest(ctx, 1)[0];
+  if (!o) return null;
+  const turn = ((o.brg - direct + 540) % 360) - 180;
+  return { club: o.club, yds: Math.round(o.carryYds), dir: turn > 4 ? 'right' : turn < -4 ? 'left' : 'straight', leave: Math.round(toYds(dist(o.aim, ctx.pin))), aim: o.aim };
 }

@@ -2,7 +2,7 @@ import './styles.css';
 import { bestFix, fmtHcp, parseHcp, handicapFromScore } from './gps';
 import { findLine, roll, speedFor, rise, describeAim, learnStimp, M_TO_FT, PuttGreen, PuttResult, PuttRead } from './putt';
 import { tipsFor, isWet, Tip } from './tips';
-import { roundRecap, whereToMiss, whichSide } from './insights';
+import { roundRecap, whereToMiss, whichSide, blockedPlay, MissAdvice, SideAdvice, BlockedPlay } from './insights';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature, fromBearing, ringCentroid } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
 import { Conditions, fetchConditions, windComponents, playsLike, compass, outlookNotes } from './conditions';
@@ -278,6 +278,36 @@ function redraw() {
       sc.addArc({ from: app.optFrom, to: o.aim, color: '#ffb300', label: `${o.club} · ${Math.round(o.carryYds)}` });
     }
   }
+  // Safe (green) and avoid (red) sides, drawn where they are.
+  if (!app.options && !app.putt && sc.currentView !== 'course') {
+    const SAFE = '#2ecc71', AVOID = '#ff5a4f';
+    const af = approachFrom();
+    const m = af ? missAdvice(af) : null;
+    if (m && af) {
+      const b = bearing(af, pinXY);
+      // Markers sit a little farther out than the zones so they stay clear of the flag.
+      const out = (p: XY) => fromBearing(p, bearing(pinXY, p), 8);
+      sc.addEllipse({ center: m.points[m.best], along: 9, across: 9, bearing: b, color: SAFE, opacity: 0.5 });
+      sc.addEllipse({ center: m.points[m.worst], along: 9, across: 9, bearing: b, color: AVOID, opacity: 0.5 });
+      sc.addMark(out(m.points[m.best]), 'safe');
+      sc.addMark(out(m.points[m.worst]), 'avoid');
+    }
+    const me = myPos();
+    const showTee = hole().par >= 4 && (app.tab === 'plan' || (app.tab === 'play' && me !== null && onTeeNow(me)) || (app.tab === 'play' && !me && !holeRec()?.shots.length && !holeRec()?.done));
+    const side = showTee ? sideCache.get(teeSideKey())?.advice : null;
+    if (side) {
+      const at = (s: 'left' | 'right', m = 18) => fromBearing(side.target, side.brg + (s === 'left' ? -90 : 90), m);
+      const other = side.favor === 'left' ? 'right' : 'left';
+      sc.addEllipse({ center: at(side.favor), along: 30, across: 11, bearing: side.brg, color: SAFE, opacity: 0.5 });
+      sc.addEllipse({ center: at(other), along: 30, across: 11, bearing: side.brg, color: AVOID, opacity: 0.5 });
+      sc.addMark(at(side.favor, 36), 'safe');
+      sc.addMark(at(other, 36), 'avoid');
+    }
+    if (app.tab === 'play' && me) {
+      const bl = blockedNow(me);
+      if (bl && bl.dir !== 'straight') sc.addArc({ from: me, to: bl.aim, color: '#ffffff', label: `Out: ${bl.club} ${bl.yds}` });
+    }
+  }
   if (app.measure) {
     const from = app.tab === 'play' && myPos() ? myPos()! : tee().center;
     sc.addGroundLine(from, app.measure, '#ffffff');
@@ -377,16 +407,42 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 // ---------------- Play tab ----------------
 /** Which side of the green is safe to miss on from here, and which to avoid. */
-function missHtml(from: XY, label = '') {
+function missAdvice(from: XY): MissAdvice | null {
   const h = hole(), d = toYds(dist(from, pin()));
-  if (d < 30 || d > 260 || app.course.lieAt(from, h) === 'green') return '';
+  if (d < 30 || d > 260 || app.course.lieAt(from, h) === 'green') return null;
   const lie: Lie = dist(from, tee().center) < 15 ? 'tee' : app.course.lieAt(from, h);
-  const m = whereToMiss(ctx(from, lie === 'water' || lie === 'ob' ? 'rough' : lie));
+  return whereToMiss(ctx(from, lie === 'water' || lie === 'ob' ? 'rough' : lie));
+}
+function missHtml(from: XY, label = '') {
+  const m = missAdvice(from);
   if (!m) return '';
   return `<div class="miss">🎯 ${label}Miss <b>${m.best}</b> if you miss. Avoid <b>${m.worst}</b>: ${m.why}${m.spread >= 0.4 ? ` (costs about ${m.spread.toFixed(1)} strokes more)` : ''}.</div>`;
 }
 
-const sideCache = new Map<string, string>();
+/** Where the approach in view is played from (for where-to-miss), or null when it doesn't apply. */
+function approachFrom(): XY | null {
+  const h = hole();
+  if (app.tab === 'plan') {
+    const steps = plan().steps;
+    return h.par === 3 ? tee().center : steps.length >= 2 ? steps[steps.length - 2].target : null;
+  }
+  if (app.tab !== 'play') return null;
+  const rec = holeRec();
+  if (!rec || rec.done) return null;
+  const from = myPos() ?? (rec.shots.length ? rec.shots[rec.shots.length - 1].start : tee().center);
+  return onTeeNow(from) ? null : from;
+}
+/** Standing on the tee of a par 4 or 5 with no shots marked yet. */
+function onTeeNow(from: XY) {
+  const rec = holeRec();
+  return hole().par >= 4 && (!rec || rec.shots.length === 0) && dist(from, tee().center) < 25;
+}
+
+const sideCache = new Map<string, { html: string; advice: SideAdvice | null }>();
+function teeSideKey() {
+  const h = hole(), c = cond(), step = plan().steps[0];
+  return [h.ref, teeSet(), step ? step.target.map((v) => Math.round(v)).join(',') : 'auto', pin().map((v) => Math.round(v)).join(','), Math.round(c.windMph / 3), Math.round(c.windFrom / 30), S().settings.handicap, wetNow()].join('|');
+}
 /**
  * Off the tee on par 4s and 5s: which side to favor, and why. It plays out the next
  * shot from both sides, which takes a moment, so it fills in just after the screen draws.
@@ -394,22 +450,40 @@ const sideCache = new Map<string, string>();
 function teeSideHtml() {
   const h = hole();
   if (h.par < 4) return '';
-  const t = tee().center, c = cond();
-  const step = plan().steps[0];
-  const key = [h.ref, teeSet(), step ? step.target.map((v) => Math.round(v)).join(',') : 'auto', pin().map((v) => Math.round(v)).join(','), Math.round(c.windMph / 3), Math.round(c.windFrom / 30), S().settings.handicap, wetNow()].join('|');
+  const t = tee().center, step = plan().steps[0];
+  const key = teeSideKey();
   const cached = sideCache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return cached.html;
   setTimeout(() => {
     if (!sideCache.has(key)) {
       const teeCtx = { ...ctx(t, 'tee'), hole: h };
       const target = step?.target ?? suggest(teeCtx, 1)[0]?.aim;
       const a = target ? whichSide(teeCtx, target) : null;
-      sideCache.set(key, a ? `<div class="miss">🎯 Off the tee, favor the <b>${a.favor}</b> side. ${a.favor === 'left' ? 'Right' : 'Left'}: ${a.why}${a.spread >= 0.3 ? ` (about ${a.spread.toFixed(1)} strokes worse)` : ''}.</div>` : '');
+      sideCache.set(key, { advice: a, html: a ? `<div class="miss">🎯 Off the tee, favor the <b>${a.favor}</b> side (✓ on the map). ${a.favor === 'left' ? 'Right' : 'Left'}: ${a.why}${a.spread >= 0.3 ? ` (about ${a.spread.toFixed(1)} strokes worse)` : ''}.</div>` : '' });
     }
     const slot = document.querySelector(`[data-side="${CSS.escape(key)}"]`);
-    if (slot) slot.outerHTML = sideCache.get(key)!;
+    if (slot) { slot.outerHTML = sideCache.get(key)!.html; redraw(); }
   }, 60);
   return `<div data-side="${esc(key)}"></div>`;
+}
+
+const blockCache = new Map<string, BlockedPlay | null>();
+/** Trees between you and the green? Say so, with the best way out. */
+function blockedNow(from: XY): BlockedPlay | null {
+  const lie = app.course.lieAt(from, hole());
+  if (lie === 'green' || lie === 'water' || lie === 'ob' || onTeeNow(from) || dist(from, tee().center) < 15) return null;
+  const c = cond();
+  const key = [app.ref, Math.round(from[0] / 4), Math.round(from[1] / 4), pin().map((v) => Math.round(v)).join(','), Math.round(c.windMph / 3), Math.round(c.windFrom / 30)].join('|');
+  if (!blockCache.has(key)) blockCache.set(key, blockedPlay(ctx(from, lie)));
+  return blockCache.get(key)!;
+}
+function blockedHtml(from: XY) {
+  const b = blockedNow(from);
+  if (!b) return '';
+  const play = b.dir === 'straight'
+    ? `The best play is still toward the green: <b>${b.club}</b>, ${b.yds} yds, leaving ${b.leave}.`
+    : `Best play: <b>${b.club}</b> out to the <b>${b.dir}</b> (${b.yds} yds), leaving ${b.leave} to the pin.`;
+  return `<div class="miss blocked">🌲 Trees are in your line to the green. ${play}</div>`;
 }
 
 /** The slope under the ball, in words, with what it does to the shot. */
@@ -500,7 +574,7 @@ function renderPlay(): string {
       <div><b>${y0(gd.back)}</b><span>Back</span></div>
     </div>
     ${clubRecHtml(pl.plays, gd)}
-    ${rec.shots.length === 0 && dist(from, tee().center) < 25 && h.par >= 4 ? teeSideHtml() : missHtml(from)}
+    ${onTeeNow(from) ? teeSideHtml() : (me ? blockedHtml(from) : '') + missHtml(from)}
     ${gpsLine || (app.gps ? `<div class="tiny muted" style="text-align:center;margin-top:2px">GPS ±${Math.max(1, Math.round(app.gps.acc * 1.09))} yds</div>` : '')}`;
 
   if (rec.done) {
@@ -793,10 +867,17 @@ const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
  * to the Home Screen, so nudge people to install it (not shown inside Claude, or once installed).
  */
 function installHtml() {
-  if (isInstalled() || S().settings.installDismissed || (window as any).claude || location.protocol !== 'https:' && location.hostname !== '127.0.0.1') return '';
-  if (installEvent) return `<div class="install"><b>Install the app</b><span>Works offline on the course and keeps your rounds safe.</span><div class="row"><button class="btn sm primary" data-act="install">Install</button><button class="btn sm" data-act="installno">Not now</button></div></div>`;
-  if (isIOS()) return `<div class="install"><b>Add to your Home Screen</b><span>On iPhone, Safari can erase saved rounds from websites you haven't opened in a while. Tap <b>Share</b> (□↑), then <b>Add to Home Screen</b> to keep them safe and use it offline.</span><div class="row"><button class="btn sm" data-act="installno">Got it</button></div></div>`;
-  return '';
+  if (isInstalled() || S().settings.installDismissed || round() || (window as any).claude || location.protocol !== 'https:' && location.hostname !== '127.0.0.1') return '';
+  if (!installEvent && !isIOS()) return '';
+  return `<div class="install-line"><span>📲 Add to your Home Screen to keep your rounds safe</span><button class="btn sm primary" data-act="${installEvent ? 'install' : 'installhow'}">${installEvent ? 'Install' : 'How'}</button><button class="btn sm" data-act="installno" aria-label="Dismiss">✕</button></div>`;
+}
+
+function installHow() {
+  modal(`<h2>Add to your Home Screen</h2>
+    <p>On iPhone, Safari can erase saved rounds from websites you haven't opened in a while. Adding the app to your Home Screen keeps them safe and lets it work offline on the course.</p>
+    <ol class="plain"><li>Tap <b>Share</b> (the square with an arrow, □↑) at the bottom of Safari.</li><li>Scroll down and tap <b>Add to Home Screen</b>.</li><li>Open it from the new icon from now on.</li></ol>
+    <div class="row"><button class="btn grow" data-act="installno">Don't show again</button><button class="btn primary grow" data-act="closemodal">OK</button></div>`);
+  $('#modal').onclick = null;
 }
 
 async function installApp() {
@@ -1102,7 +1183,7 @@ function startRound() {
   S().activeRoundId = r.id;
   saveNow(S());
   startGps();
-  if (weatherAge() > 2 * 60 * 1000) void getWeather();
+  if (weatherAge() > 2 * 60 * 1000) void getWeather(true);
   refresh();
 }
 
@@ -1298,7 +1379,8 @@ function onClick(e: Event) {
     case 'sgbase': S().settings.sgBaseline = el.dataset.v as 'me' | 'scratch' | 'tour'; save(); renderPanel(); break;
     case 'pinsheet': pinSheet(); break;
     case 'install': void installApp(); break;
-    case 'installno': S().settings.installDismissed = true; save(); renderPanel(); break;
+    case 'installno': S().settings.installDismissed = true; save(); closeModal(); renderPanel(); break;
+    case 'installhow': installHow(); break;
     case 'wind': {
       S().settings.showWind = !S().settings.showWind;
       save();

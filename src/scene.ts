@@ -7,7 +7,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { Course, Hole, XY, Feature, dist, bearing, YD, TREE_M, pointInFeature } from './course';
 
 export interface Arc { from: XY; to: XY; color: string; label?: string; dashed?: boolean; width?: number }
-export interface Ellipse { center: XY; along: number; across: number; bearing: number; color: string }
+export interface Ellipse { center: XY; along: number; across: number; bearing: number; color: string; opacity?: number }
 export type ViewName = 'tee' | 'top' | 'green' | 'course' | 'putt' | 'puttTop';
 export interface Wind { windFrom: number; windMph: number }
 
@@ -520,9 +520,31 @@ export class HoleScene {
     for (let i = 1; i <= seg; i++) pts.push(...verts[0].toArray(), ...verts[i].toArray(), ...verts[i + 1].toArray());
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-    this.overlay.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: e.color, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false })));
+    this.overlay.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: e.color, transparent: true, opacity: e.opacity ?? 0.28, side: THREE.DoubleSide, depthWrite: false })));
     const outline = new THREE.BufferGeometry().setFromPoints(verts.slice(1));
     this.overlay.add(new THREE.Line(outline, new THREE.LineBasicMaterial({ color: e.color })));
+    this.render();
+  }
+
+  /** Small ✓ (safe) or ✕ (avoid) marker at a fixed on-screen size. */
+  addMark(p: XY, kind: 'safe' | 'avoid') {
+    const cv = document.createElement('canvas');
+    cv.width = 48; cv.height = 48;
+    const g = cv.getContext('2d')!;
+    g.fillStyle = kind === 'safe' ? '#1e9e57' : '#d8432f';
+    g.beginPath(); g.arc(24, 24, 20, 0, Math.PI * 2); g.fill();
+    g.lineWidth = 3; g.strokeStyle = '#fff'; g.stroke();
+    g.lineWidth = 5; g.lineCap = 'round'; g.beginPath();
+    if (kind === 'safe') { g.moveTo(14, 25); g.lineTo(21, 32); g.lineTo(34, 17); }
+    else { g.moveTo(16, 16); g.lineTo(32, 32); g.moveTo(32, 16); g.lineTo(16, 32); }
+    g.stroke();
+    const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
+    sp.userData = { w: 48, h: 48, hpx: 20, p };
+    sp.position.copy(this.v3(p, 1.5));
+    sp.renderOrder = 12;
+    this.overlay.add(sp);
+    this.sizeLabels();
     this.render();
   }
 

@@ -436,3 +436,27 @@ describe('insights', () => {
     expect(a?.favor).toBe('left');
   });
 });
+
+describe('blocked by trees', () => {
+  it('flags a ball behind trees and gives a way out; open fairway is not blocked', async () => {
+    const { blockedPlay } = await import('../src/insights');
+    const bag = freshState().bag;
+    let blocked = 0, open = 0;
+    for (const h of course.holes) {
+      if (h.par < 4) continue;
+      const t = teeFor(h, 'middle').center;
+      const mid = course.alongLine(h, t, dist(t, h.pin) * 0.5);
+      if (course.lieAt(mid, h) === 'fairway' && !blockedPlay({ course, hole: h, from: mid, lie: 'fairway', pin: h.pin, cond: CALM, bag, handicap: 15 })) open++;
+      // 35 m off the line, look for a spot under or behind trees
+      for (const side of [-1, 1]) {
+        const p: [number, number] = [mid[0] + side * 35, mid[1]];
+        const lie = course.lieAt(p, h);
+        if (lie === 'ob' || lie === 'water' || lie === 'green') continue;
+        const b = blockedPlay({ course, hole: h, from: p, lie, pin: h.pin, cond: CALM, bag, handicap: 15 });
+        if (b) { blocked++; expect(b.yds).toBeGreaterThan(0); }
+      }
+    }
+    expect(open).toBeGreaterThan(5);
+    expect(blocked).toBeGreaterThan(3);
+  });
+});
