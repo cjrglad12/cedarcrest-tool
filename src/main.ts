@@ -2,6 +2,7 @@ import './styles.css';
 import { bestFix, fmtHcp, parseHcp, handicapFromScore } from './gps';
 import { findLine, roll, speedFor, rise, describeAim, learnStimp, M_TO_FT, PuttGreen, PuttResult, PuttRead } from './putt';
 import { tipsFor, isWet, Tip } from './tips';
+import { roundRecap, whereToMiss, whichSide } from './insights';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature, fromBearing, ringCentroid } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
 import { Conditions, fetchConditions, windComponents, playsLike, compass, outlookNotes } from './conditions';
@@ -322,6 +323,8 @@ function renderPlan(): string {
     <div class="elev">${elevText(t.center, pinXY, 'the tee')}</div>
     ${tipsHtml(tipsFor({ cond: c, wetSetting: S().settings.wet, where: 'plan', shotYds: toYds(dist(t.center, pinXY)) > 260 ? 230 : toYds(dist(t.center, pinXY)), shotBearing: bearing(t.center, pinXY) }))}
 
+    ${h.par === 3 ? missHtml(t.center) : teeSideHtml() + (steps.length >= 2 ? missHtml(steps[steps.length - 2].target, 'On your approach: ') : '')}
+
     <h3>Your plan</h3>
     ${steps.length ? `<ul class="list">${stepRows}</ul>` : '<p class="muted small">No plan yet. Let the app suggest one, or add shots and tap the map to place each target.</p>'}
     <div class="row wrap">
@@ -373,6 +376,42 @@ function renderOptions(): string {
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 // ---------------- Play tab ----------------
+/** Which side of the green is safe to miss on from here, and which to avoid. */
+function missHtml(from: XY, label = '') {
+  const h = hole(), d = toYds(dist(from, pin()));
+  if (d < 30 || d > 260 || app.course.lieAt(from, h) === 'green') return '';
+  const lie: Lie = dist(from, tee().center) < 15 ? 'tee' : app.course.lieAt(from, h);
+  const m = whereToMiss(ctx(from, lie === 'water' || lie === 'ob' ? 'rough' : lie));
+  if (!m) return '';
+  return `<div class="miss">🎯 ${label}Miss <b>${m.best}</b> if you miss. Avoid <b>${m.worst}</b>: ${m.why}${m.spread >= 0.4 ? ` (costs about ${m.spread.toFixed(1)} strokes more)` : ''}.</div>`;
+}
+
+const sideCache = new Map<string, string>();
+/**
+ * Off the tee on par 4s and 5s: which side to favor, and why. It plays out the next
+ * shot from both sides, which takes a moment, so it fills in just after the screen draws.
+ */
+function teeSideHtml() {
+  const h = hole();
+  if (h.par < 4) return '';
+  const t = tee().center, c = cond();
+  const step = plan().steps[0];
+  const key = [h.ref, teeSet(), step ? step.target.map((v) => Math.round(v)).join(',') : 'auto', pin().map((v) => Math.round(v)).join(','), Math.round(c.windMph / 3), Math.round(c.windFrom / 30), S().settings.handicap, wetNow()].join('|');
+  const cached = sideCache.get(key);
+  if (cached !== undefined) return cached;
+  setTimeout(() => {
+    if (!sideCache.has(key)) {
+      const teeCtx = { ...ctx(t, 'tee'), hole: h };
+      const target = step?.target ?? suggest(teeCtx, 1)[0]?.aim;
+      const a = target ? whichSide(teeCtx, target) : null;
+      sideCache.set(key, a ? `<div class="miss">🎯 Off the tee, favor the <b>${a.favor}</b> side. ${a.favor === 'left' ? 'Right' : 'Left'}: ${a.why}${a.spread >= 0.3 ? ` (about ${a.spread.toFixed(1)} strokes worse)` : ''}.</div>` : '');
+    }
+    const slot = document.querySelector(`[data-side="${CSS.escape(key)}"]`);
+    if (slot) slot.outerHTML = sideCache.get(key)!;
+  }, 60);
+  return `<div data-side="${esc(key)}"></div>`;
+}
+
 /** The slope under the ball, in words, with what it does to the shot. */
 function lieHtml(from: XY, toward: XY) {
   const lie = app.course.lieAt(from, hole());
@@ -461,6 +500,7 @@ function renderPlay(): string {
       <div><b>${y0(gd.back)}</b><span>Back</span></div>
     </div>
     ${clubRecHtml(pl.plays, gd)}
+    ${rec.shots.length === 0 && dist(from, tee().center) < 25 && h.par >= 4 ? teeSideHtml() : missHtml(from)}
     ${gpsLine || (app.gps ? `<div class="tiny muted" style="text-align:center;margin-top:2px">GPS ±${Math.max(1, Math.round(app.gps.acc * 1.09))} yds</div>` : '')}`;
 
   if (rec.done) {
@@ -521,6 +561,32 @@ function renderPlay(): string {
     </div>
     <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="quick">Just enter my score</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="pinsheet">Today's pin</button><button class="btn sm" data-act="simnow">Place ball by hand</button></div>
     ${roundFooter()}`;
+}
+
+/** Score differential for a finished 18-hole round (null if not 18 holes or no rating). */
+function roundDifferential(r: Round): number | null {
+  const v = analyzeRound(app.course, r, S().settings.handicap);
+  const rs = ratingFor(r.teeSet);
+  if (!rs || v.holes.length !== 18) return null;
+  const ch = courseHandicap(S().settings.handicap, rs.rating, rs.slope, app.course.holes.reduce((a, h) => a + h.par, 0));
+  return differential(adjustedGross(v.holes.map((x) => ({ score: x.score, par: x.par, strokeIndex: app.course.hole(x.ref).handicap })), ch), rs.rating, rs.slope);
+}
+
+/** After a round: what went well, what cost shots, one thing to work on. */
+function recap(roundId: string) {
+  const r = S().rounds.find((x) => x.id === roundId);
+  if (!r) return;
+  const v = analyzeRound(app.course, r, S().settings.handicap);
+  if (!v.holes.length) return;
+  const rc = roundRecap(v);
+  const diff = roundDifferential(r);
+  modal(`<h2>Round recap · ${new Date(r.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</h2>
+    <p><b>${rc.headline}</b>${diff !== null ? ` · differential ${diff.toFixed(1)}` : ''}</p>
+    ${rc.good.length ? `<h3>Went well</h3><ul class="plain">${rc.good.map((g) => `<li>${g}</li>`).join('')}</ul>` : ''}
+    ${rc.cost.length ? `<h3>Where shots went</h3><ul class="plain">${rc.cost.map((c) => `<li><b>${c.strokes}</b> · ${c.label}</li>`).join('')}</ul>` : ''}
+    <h3>One thing to work on</h3><div class="card">${rc.focus}</div>
+    <div class="row" style="margin-top:10px"><button class="btn grow" data-act="scorecard" data-id="${r.id}">Scorecard</button><button class="btn primary grow" data-act="closemodal">Done</button></div>`);
+  $('#modal').onclick = null;
 }
 
 /** Rating and slope for a tee set: yours from Settings, else the published scorecard. */
@@ -697,9 +763,9 @@ function renderStats(): string {
       ${mg.short + mg.long + mg.left + mg.right ? `<div class="small muted">Missed greens: ${mg.short} short · ${mg.long} long · ${mg.left} left · ${mg.right} right</div>` : ''}`;
     })()}
 
-    <h3>Rounds</h3>
+    <h3>Rounds <span class="tiny muted" style="text-transform:none;letter-spacing:0">tap one for its recap</span></h3>
     <table><tr><th>Date</th><th>Score</th><th>Putts</th><th>FW</th><th>GIR</th></tr>
-    ${rounds.slice().reverse().slice(0, 10).map((v) => `<tr><td>${new Date(v.round.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}${v.holes.length < 18 ? ` <span class="muted">(${v.holes.length})</span>` : ''}</td><td>${v.score} <span class="muted">${v.score - v.par === 0 ? 'E' : sgn(v.score - v.par, 0)}</span></td><td>${v.putts}</td><td>${v.fairways[0]}/${v.fairways[1]}</td><td>${v.gir[0]}/${v.gir[1]}</td></tr>`).join('')}</table>
+    ${rounds.slice().reverse().slice(0, 10).map((v) => `<tr data-act="recap" data-id="${v.round.id}" style="cursor:pointer"><td>${new Date(v.round.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}${v.holes.length < 18 ? ` <span class="muted">(${v.holes.length})</span>` : ''}</td><td>${v.score} <span class="muted">${v.score - v.par === 0 ? 'E' : sgn(v.score - v.par, 0)}</span></td><td>${v.putts}</td><td>${v.fairways[0]}/${v.fairways[1]}</td><td>${v.gir[0]}/${v.gir[1]}</td></tr>`).join('')}</table>
 
     <h3>Hole ${h.ref} history</h3>
     ${hist.length ? `<div class="small">Average ${avgScore(hist).toFixed(2)} on par ${h.par} over ${hist.length} round${hist.length > 1 ? 's' : ''}.${followed.length && skipped.length ? ` Followed plan: ${avgScore(followed).toFixed(2)} · didn't: ${avgScore(skipped).toFixed(2)}` : ''}</div>
@@ -1228,6 +1294,7 @@ function onClick(e: Event) {
     case 'readputt': app.scene.view('green'); startPutt(); break;
     case 'wet': { const order = ['auto', 'wet', 'dry'] as const; S().settings.wet = order[(order.indexOf(S().settings.wet) + 1) % 3]; save(); app.options = null; renderPanel(); break; }
     case 'resetview': app.scene.view(app.scene.currentView); renderTop(); break;
+    case 'recap': recap(el.dataset.id!); break;
     case 'sgbase': S().settings.sgBaseline = el.dataset.v as 'me' | 'scratch' | 'tour'; save(); renderPanel(); break;
     case 'pinsheet': pinSheet(); break;
     case 'install': void installApp(); break;
@@ -1304,8 +1371,8 @@ function onClick(e: Event) {
         saveNow(S()); refreshBag(); app.tab = 'stats'; refresh();
         const last = S().settings.lastBackup ? Date.parse(S().settings.lastBackup!) : 0;
         if (S().rounds.length && Date.now() - last > 14 * 864e5) {
-          ask('Back up your rounds? They live only on this phone.', 'Export backup').then((yes) => { if (yes) void exportData(); });
-        }
+          ask('Back up your rounds? They live only on this phone.', 'Export backup').then((yes) => { if (yes) void exportData(); if (S().rounds.includes(r)) recap(r.id); });
+        } else if (S().rounds.includes(r)) recap(r.id);
       });
       break;
     case 'simnow': app.mode = { kind: 'sim' }; renderModebar(); break;

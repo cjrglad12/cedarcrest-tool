@@ -1,6 +1,6 @@
 // Offline support: keep the app and course data on the phone.
 // Pages and data: use the network when it's there, fall back to the cache on the course.
-const CACHE = 'cedarcrest-v10';
+const CACHE = 'cedarcrest-v11';
 const CORE = ['./', './index.html', './data/course.json', './data/terrain.bin', './data/canopy.bin', './data/greens.bin', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', (e) => {

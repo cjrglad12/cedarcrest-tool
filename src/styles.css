@@ -184,3 +184,6 @@ html.big .big3 b { font-size: 30px; }
 html.big .big3.play b { font-size: 36px; }
 html.big .btn { font-size: 16.5px; }
 html.big #viewbtns button { font-size: 15px; height: 38px; }
+.miss { font-size: 13.5px; line-height: 1.35; margin: 4px 0 6px; padding: 7px 10px; border-radius: 10px; background: color-mix(in srgb, var(--plan) 14%, var(--panel)); }
+ul.plain { margin: 4px 0; padding-left: 18px; }
+ul.plain li { margin: 3px 0; }
