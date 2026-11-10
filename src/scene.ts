@@ -37,6 +37,8 @@ export class HoleScene {
   private teeXY: XY = [0, 0];
   private pin: XY = [0, 0];
   private needsRender = true;
+  private alive = true;
+  private resizeObs: ResizeObserver | null = null;
   private pinObj = new THREE.Group();
   private teeObj = new THREE.Group();
   private landmarks = new THREE.Group(); // buildings and place labels
@@ -82,10 +84,12 @@ export class HoleScene {
     this.buildMarkers();
 
     this.setupTap();
-    new ResizeObserver(() => this.resize()).observe(el);
+    this.resizeObs = new ResizeObserver(() => this.resize());
+    this.resizeObs.observe(el);
     this.resize();
     let last = performance.now();
     const loop = (now: number) => {
+      if (!this.alive) return;
       requestAnimationFrame(loop);
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
@@ -98,6 +102,14 @@ export class HoleScene {
       }
     };
     requestAnimationFrame(loop);
+  }
+
+  stop() {
+    this.alive = false;
+    this.resizeObs?.disconnect();
+    this.controls.dispose();
+    this.renderer.dispose();
+    this.renderer.domElement.remove();
   }
 
   render() { this.needsRender = true; }

@@ -10,7 +10,7 @@ import { suggest, buildPlan, evaluate, Option, Ctx } from './advice';
 import { analyzeRound, analyzeHole, clubStats, effectiveBag, holeHistory, ClubStat, scoringStats, differential, courseHandicap, adjustedGross } from './stats';
 import { CATEGORY_LABEL, Category } from './sg';
 import { loadState, saveState, saveNow, migrate, uid, freshState, recoveredFrom, setSaveErrorHandler, State, Round, HoleRec, HolePlan, TeeSet, Club, DEFAULT_BAG } from './store';
-import { cardHole, cardTotal, CARD_SOURCE, TEE_SETS } from './card';
+import { cardHole, cardTotal, cardSource, TEE_SETS, setActiveCourse, courseInfo, courseList, type CourseId } from './card';
 import { clubSentence, par5Sentence } from './copy';
 
 type Tab = 'plan' | 'play' | 'stats';
@@ -49,16 +49,18 @@ const app = {
 // ---------------- helpers ----------------
 const S = () => app.state;
 const save = () => saveState(app.state);
+const courseNow = (): CourseId => S().settings.courseId ?? 'cedar';
+const pkey = (ref = app.ref) => `${courseNow()}:${ref}`;
 const hole = (): Hole => app.course.hole(app.ref);
 const round = (): Round | null => S().rounds.find((r) => r.id === S().activeRoundId) ?? null;
 const holeRec = (): HoleRec | null => round()?.holes[app.ref] ?? null;
 const teeSet = (): TeeSet => round()?.teeSet ?? S().settings.teeSet;
 const tee = () => teeFor(hole(), teeSet());
-const planPin = (): XY => S().pins[app.ref] ?? hole().pin;
+const planPin = (): XY => S().pins[pkey()] ?? hole().pin;
 const pin = (): XY => (app.tab === 'play' && holeRec()?.pin) || planPin();
 const cond = (): Conditions => round()?.conditions ?? S().conditions;
-const plan = (): HolePlan => S().plans[app.ref] ?? { steps: [], notes: '', updated: '' };
-const setPlan = (p: HolePlan) => { S().plans[app.ref] = { ...p, updated: new Date().toISOString() }; save(); };
+const plan = (): HolePlan => S().plans[pkey()] ?? { steps: [], notes: '', updated: '' };
+const setPlan = (p: HolePlan) => { S().plans[pkey()] = { ...p, updated: new Date().toISOString() }; save(); };
 const farFromCourse = () => !app.gps || dist(app.gps.xy, [0, 0]) > 2500;
 const usingSim = () => S().settings.simulateGps || (farFromCourse() && !!app.sim);
 const myPos = (): XY | null => (usingSim() ? app.sim : app.gps?.xy ?? null);
@@ -145,8 +147,10 @@ function welcome() {
   let hcp = S().settings.handicap, drv = S().bag.find((c) => c.name === 'Driver')?.yds ?? 230, tees = S().settings.teeSet;
   let showHcp = false;
   const draw = () => {
-    modal(`<h2>Cedar Crest</h2>
+    modal(`<h2>${courseInfo().name}</h2>
       <p class="small">Which tees, and how far does the driver go. You can change both later.</p>
+      <div class="small" style="margin:12px 0 6px">Course</div>
+      <div class="seg">${courseList().map((c) => `<button class="${c.id === courseNow() ? 'on' : ''}" data-w="course" data-v="${c.id}">${c.name}</button>`).join('')}</div>
       <div class="small" style="margin:12px 0 6px">Tees</div>
       <div class="seg">${TEE_SETS.map((t) => `<button class="${t === tees ? 'on' : ''}" data-w="tees" data-v="${t}">${teeName(t)}<small>${cardTotal(t)}</small></button>`).join('')}</div>
       <div class="row spread" style="margin-top:12px"><span>Driver distance</span><div class="stepper"><button data-w="drv" data-d="-5" aria-label="Shorter">−</button><b>${drv}</b><button data-w="drv" data-d="5" aria-label="Longer">+</button></div></div>
@@ -164,6 +168,16 @@ function welcome() {
       if (w === 'hashcp') showHcp = true;
       if (w === 'drv') drv = Math.max(120, Math.min(330, drv + +b.dataset.d!));
       if (w === 'tees') tees = b.dataset.v as TeeSet;
+      if (w === 'course') {
+        const id = b.dataset.v as CourseId;
+        if (id !== courseNow()) {
+          S().settings.courseId = id;
+          saveNow(S());
+          closeModal();
+          void openCourse().then(() => welcome());
+          return;
+        }
+      }
       if (w === 'go') {
         if (showHcp && typed === null) { toast('Enter a handicap like 12.4, or skip it'); return; }
         const base = S().bag.find((c) => c.name === 'Driver')?.yds ?? 230;
@@ -425,7 +439,7 @@ function renderPlan(): string {
     <button class="btn" data-act="readputt">⛳ Read a putt on this green</button>
 
     <h3>Pin &amp; notes</h3>
-    <div class="row wrap"><button class="btn sm" data-act="pinsheet">Pin sheet</button><button class="btn sm" data-act="setpin">Tap to move pin</button>${S().pins[app.ref] ? '<button class="btn sm" data-act="resetpin">Reset pin</button>' : '<span class="small muted">Using the mapped pin</span>'}</div>
+    <div class="row wrap"><button class="btn sm" data-act="pinsheet">Pin sheet</button><button class="btn sm" data-act="setpin">Tap to move pin</button>${S().pins[pkey()] ? '<button class="btn sm" data-act="resetpin">Reset pin</button>' : '<span class="small muted">Using the mapped pin</span>'}</div>
     <textarea data-act="notes" placeholder="Notes for this hole (miss short, favor left side…)">${esc(plan().notes)}</textarea>
     <p class="tiny muted">Tap anywhere on the hole to measure. Distances are in yards. "Plays" adjusts for elevation, wind and temperature.</p>`;
 }
@@ -561,16 +575,18 @@ function carriesHtml(from: XY, pinXY: XY) {
 
 function newHoleRec(r: Round): HoleRec {
   const quick = r.trackShots === false;
-  return { ref: app.ref, teeId: tee().id, pin: S().pins[app.ref] ?? hole().pin, shots: [], greenMark: null, putts: quick ? 2 : 0, holedFromOff: false, followedPlan: null, done: false, quick, strokes: quick ? parNow() : undefined, fairway: null };
+  return { ref: app.ref, teeId: tee().id, pin: S().pins[pkey()] ?? hole().pin, shots: [], greenMark: null, putts: quick ? 2 : 0, holedFromOff: false, followedPlan: null, done: false, quick, strokes: quick ? parNow() : undefined, fairway: null };
 }
 
 function renderPlay(): string {
   const r = round();
   if (!r) {
-    const past = S().rounds.filter((x) => x.finished).slice(-3).reverse();
+    const past = S().rounds.filter((x) => x.finished && (x.courseId ?? 'cedar') === courseNow()).slice(-3).reverse();
     const track = S().settings.trackShots;
     return `
       <h3>Start a round</h3>
+      <div class="seg">${courseList().map((c) => `<button class="${c.id === courseNow() ? 'on' : ''}" data-act="course" data-v="${c.id}">${c.name}</button>`).join('')}</div>
+      <div class="small" style="margin:12px 0 6px">Tees</div>
       <div class="seg">${TEE_SETS.map((t) => `<button class="${S().settings.teeSet === t ? 'on' : ''}" data-act="teeset" data-v="${t}">${teeName(t)}<small>${cardTotal(t)}</small></button>`).join('')}</div>
       <div class="small" style="margin:12px 0 6px">Scoring</div>
       <div class="seg">
@@ -677,7 +693,7 @@ function recap(roundId: string) {
 
 /** Rating and slope for a tee set: yours from Settings, else the published scorecard. */
 function ratingFor(set: TeeSet) {
-  const mine = S().settings.ratings[set];
+  const mine = (S().settings.ratingsCourse ?? 'cedar') === courseNow() ? S().settings.ratings[set] : undefined;
   if (mine && mine.rating > 50 && mine.slope >= 55 && mine.slope <= 155) return mine;
   const pub = cardHole(1, set);
   return { rating: pub.rating, slope: pub.slope };
@@ -731,7 +747,7 @@ function pinSheet() {
       if (k === 'save') {
         const pt = solve();
         if (!pt) return;
-        if (app.tab === 'play' && holeRec()) holeRec()!.pin = pt; else S().pins[app.ref] = pt;
+        if (app.tab === 'play' && holeRec()) holeRec()!.pin = pt; else S().pins[pkey()] = pt;
         save(); closeModal(); app.options = null; refresh(); toast(`Pin set: ${on} on, ${from} from the ${side}`);
         return;
       }
@@ -805,7 +821,7 @@ const baselineName = () => ({ me: `a typical ${fmtHcp(S().settings.handicap)} ha
 
 function renderStats(): string {
   const hcp = baselineHcp();
-  const rounds = S().rounds.map((r) => analyzeRound(app.course, r, hcp)).filter((v) => v.holes.length);
+  const rounds = S().rounds.filter((r) => (r.courseId ?? 'cedar') === courseNow()).map((r) => analyzeRound(app.course, r, hcp)).filter((v) => v.holes.length);
   if (!rounds.length) {
     return `<p class="muted">No rounds yet. Play a round from the Play tab and your strokes gained, hole history and club distances will show up here.</p>${clubsTable()}`;
   }
@@ -1083,7 +1099,9 @@ function clubPicker(suggested: string | undefined, onPick: (c: string) => void) 
 function menu() {
   const s = S().settings;
   modal(`<h2>Settings</h2>
-    <div class="row spread"><span>Handicap</span><input class="hcp-in" inputmode="decimal" autocomplete="off" value="${fmtHcp(s.handicap)}" data-set="handicap" aria-label="Handicap index"/></div>
+    <div class="small" style="margin-bottom:6px">Course</div>
+    <div class="seg">${courseList().map((c) => `<button class="${c.id === courseNow() ? 'on' : ''}" data-act="course" data-v="${c.id}">${c.name}</button>`).join('')}</div>
+    <div class="row spread" style="margin-top:10px"><span>Handicap</span><input class="hcp-in" inputmode="decimal" autocomplete="off" value="${fmtHcp(s.handicap)}" data-set="handicap" aria-label="Handicap index"/></div>
     <div class="row spread" style="margin-top:8px"><span>Default tees</span><select class="clubsel" data-set="teeSet">${TEE_SETS.map((t) => `<option value="${t}" ${t === s.teeSet ? 'selected' : ''}>${teeName(t)}</option>`).join('')}</select></div>
     <div class="row spread" style="margin-top:8px"><span>Slope exaggeration</span><select class="clubsel" data-set="exaggerate">${[1, 1.5, 2, 3].map((v) => `<option value="${v}" ${v === s.exaggerate ? 'selected' : ''}>${v}×</option>`).join('')}</select></div>
     <label class="row spread" style="margin-top:8px"><span>Simple view (plain words, fewer numbers)</span><input type="checkbox" data-set="simple" ${s.simple ? 'checked' : ''}/></label>
@@ -1091,7 +1109,7 @@ function menu() {
     <label class="row spread" style="margin-top:8px"><span>Left-handed</span><input type="checkbox" data-set="leftHanded" ${s.leftHanded ? 'checked' : ''}/></label>
     <label class="row spread" style="margin-top:8px"><span>Practice mode (place ball by hand)</span><input type="checkbox" data-set="simulateGps" ${s.simulateGps ? 'checked' : ''}/></label>
     <h3>Course rating and slope</h3>
-    <p class="tiny muted">${CARD_SOURCE}</p>
+    <p class="tiny muted">${cardSource()}</p>
     ${TEE_SETS.map((t) => `<div class="row spread" style="margin-top:6px"><span>${teeName(t)}</span><span class="row"><input type="number" step="0.1" placeholder="${cardHole(1, t).rating}" style="width:76px" data-rating="${t}" data-k="rating" value="${S().settings.ratings[t]?.rating ?? ''}"/><input type="number" step="1" placeholder="${cardHole(1, t).slope}" style="width:66px" data-rating="${t}" data-k="slope" value="${S().settings.ratings[t]?.slope ?? ''}"/></span></div>`).join('')}
     <h3>Bag</h3>
     <table><tr><th>On</th><th style="text-align:left">Club</th><th>Yds</th><th>± yds</th><th>± °</th></tr>
@@ -1203,7 +1221,7 @@ function removeRound(id: string) {
 }
 
 function startRound() {
-  const r: Round = { id: uid(), date: new Date().toISOString(), teeSet: S().settings.teeSet, conditions: { ...S().conditions }, holes: {}, finished: false, trackShots: S().settings.trackShots };
+  const r: Round = { id: uid(), date: new Date().toISOString(), teeSet: S().settings.teeSet, conditions: { ...S().conditions }, holes: {}, finished: false, trackShots: S().settings.trackShots, courseId: courseNow() };
   S().rounds.push(r);
   S().activeRoundId = r.id;
   saveNow(S());
@@ -1331,7 +1349,7 @@ function onTap(p: XY) {
   } else if (m?.kind === 'pin') {
     const g = app.course.greenOf(hole());
     if (g && !pointInFeature(p, g)) { toast('Tap on the green'); return; }
-    if (app.tab === 'play' && holeRec()) holeRec()!.pin = p; else S().pins[app.ref] = p;
+    if (app.tab === 'play' && holeRec()) holeRec()!.pin = p; else S().pins[pkey()] = p;
     save(); app.mode = null; app.options = null;
   } else if (m?.kind === 'green') {
     app.mode = null;
@@ -1456,7 +1474,17 @@ function onClick(e: Event) {
       break;
     }
     case 'setpin': case 'roundpin': app.mode = { kind: 'pin' }; app.scene.view('green'); renderModebar(); break;
-    case 'resetpin': delete S().pins[app.ref]; save(); refresh(); break;
+    case 'resetpin': delete S().pins[pkey()]; save(); refresh(); break;
+    case 'course': {
+      const id = el.dataset.v as CourseId;
+      if (!id || id === courseNow()) break;
+      if (round()) { toast("Save and stop, or don't save, before changing course"); break; }
+      S().settings.courseId = id;
+      saveNow(S());
+      closeModal();
+      void openCourse();
+      break;
+    }
     case 'teeset': S().settings.teeSet = el.dataset.v as TeeSet; save(); refresh(); break;
     case 'startround': startRound(); break;
     case 'trackshots': S().settings.trackShots = el.dataset.v === '1'; save(); renderPanel(); break;
@@ -1558,7 +1586,7 @@ function onChange(e: Event) {
     const cur = { ...(S().settings.ratings[t] ?? { rating: 0, slope: 0 }) };
     (cur as any)[el.dataset.k!] = +el.value;
     if (!cur.rating && !cur.slope) delete S().settings.ratings[t];
-    else S().settings.ratings[t] = cur;
+    else { S().settings.ratings[t] = cur; S().settings.ratingsCourse = courseNow(); }
     save();
     return;
   }
@@ -1570,25 +1598,13 @@ function onChange(e: Event) {
 }
 
 // ---------------- boot ----------------
-async function boot() {
-  try {
-    const baseUrl = new URL(location.href);
-    if (!baseUrl.pathname.endsWith('/')) baseUrl.pathname += '/';
-    app.course = await Course.load(new URL('data/', baseUrl).href);
-  } catch (e) {
-    $('#loading').textContent = 'Could not load the course. Check the connection and reload.';
-    return;
-  }
-  $('#loading').remove();
-  refreshBag();
-  app.scene = new HoleScene($('#view'), app.course);
+function bindScene() {
   app.scene.onTap = onTap;
   app.scene.onCompass = setNeedle;
   app.scene.onUserMove = () => renderTop();
   app.scene.onBallMove = (p, done) => {
     if (!app.putt || !p) { if (done && app.putt) renderPanel(); return; }
     const pt = app.putt, g = puttGreen();
-    // Keep the same aim direction and pace relative to the ball while it moves.
     const dx = pt.aim[0] - pt.ball[0], dy = pt.aim[1] - pt.ball[1];
     pt.ball = p;
     if (done) { startPutt(p); return; }
@@ -1602,8 +1618,47 @@ async function boot() {
     if (done) renderPanel();
   };
   app.scene.setExaggeration(S().settings.exaggerate);
+}
+
+async function openCourse() {
+  setActiveCourse(courseNow());
+  const baseUrl = new URL(location.href);
+  if (!baseUrl.pathname.endsWith('/')) baseUrl.pathname += '/';
+  const prev = app.scene as HoleScene | null;
+  if (prev?.stop) prev.stop();
+  const view = $('#view');
+  view.innerHTML = '<div id="loading">Loading course…</div>';
+  try {
+    app.course = await Course.load(new URL(courseInfo().path, baseUrl).href);
+  } catch {
+    const msg = document.getElementById('loading');
+    if (msg) msg.textContent = 'Could not load the course. Check the connection and reload.';
+    return;
+  }
+  document.getElementById('loading')?.remove();
+  app.gps = null;
+  app.fixes = [];
+  app.sim = null;
+  app.putt = null;
+  app.scene = new HoleScene(view, app.course);
+  bindScene();
+  document.title = courseInfo().name;
+  refreshBag();
+  refresh({ camera: true });
+  if (weatherAge() > 60_000) void getWeather(true);
+}
+
+async function boot() {
+  try {
+    await openCourse();
+  } catch {
+    const msg = document.getElementById('loading');
+    if (msg) msg.textContent = 'Could not load the course. Check the connection and reload.';
+    return;
+  }
+  if (!app.course) return;
   const hash = +location.hash.replace('#', '');
-  if (hash >= 1 && hash <= 18) app.ref = hash;
+  if (hash >= 1 && hash <= 18) { app.ref = hash; refresh({ camera: true }); }
   document.documentElement.classList.toggle('big', !!S().settings.bigText);
   setSaveErrorHandler(() => toast("Couldn't save. Your phone's storage may be full. Export a backup from ☰ now.", 6000, true));
   if (recoveredFrom) setTimeout(() => toast("Your saved data couldn't be read, so a copy was kept and the app started fresh. Import a backup from ☰ if you have one.", 7000, true), 1500);
@@ -1616,15 +1671,14 @@ async function boot() {
   $('#grip').addEventListener('click', () => $('#sheet').classList.toggle('min'));
   window.addEventListener('pagehide', () => saveNow(S()));
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(S()); });
-  if (round()) startGps();
+  if (round() && (round()!.courseId ?? 'cedar') === courseNow()) startGps();
+  else if (round()) S().activeRoundId = null;
   refresh({ camera: true });
-  if (weatherAge() > WEATHER_EVERY) void getWeather(true);
   startLiveWeather();
   if (!S().settings.onboarded) welcome();
   if ('serviceWorker' in navigator && location.hostname.endsWith('github.io')) navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 }
-
 let started = false;
 export function start() {
   if (started) return;

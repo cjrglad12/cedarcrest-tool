@@ -63,7 +63,9 @@ export interface Round {
   conditions: Conditions;
   holes: Record<number, HoleRec>;
   finished: boolean;
-  trackShots?: boolean; // false = quick scoring by default
+  trackShots?: boolean;
+  /** Which course this round was played on. Missing means Cedar Crest. */
+  courseId?: string;
 }
 
 export type TeeSet = 'black' | 'gold' | 'silver' | 'ruby';
@@ -91,14 +93,18 @@ export interface Settings {
   installDismissed: boolean;
   simple: boolean; // plain words, fewer numbers
   bigText: boolean;
+  /** cedar, sherrill1, or sherrill2. */
+  courseId: 'cedar' | 'sherrill1' | 'sherrill2';
+  /** Tee rating overrides belong to one course. */
+  ratingsCourse?: string;
 }
 
 export interface State {
   version: 1;
   settings: Settings;
   bag: Club[];
-  plans: Record<number, HolePlan>;
-  pins: Record<number, XY>; // pin positions for planning (default: mapped pin)
+  plans: Record<string, HolePlan>;
+  pins: Record<string, XY>; // pin positions for planning (default: mapped pin)
   rounds: Round[];
   activeRoundId: string | null;
   conditions: Conditions; // last weather used for planning
@@ -109,7 +115,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'gold', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: false, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false, grainToward: null, stimpToday: null, sgBaseline: 'me', installDismissed: false, simple: true, bigText: false },
+    settings: { handicap: 15, teeSet: 'gold', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: false, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false, grainToward: null, stimpToday: null, sgBaseline: 'me', installDismissed: false, simple: true, bigText: false, courseId: 'cedar' },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},
@@ -145,9 +151,15 @@ export function normalizeTee(v: unknown): TeeSet {
 
 export function migrate(s: Partial<State>): State {
   const base = freshState();
-  const settings = { ...base.settings, ...(s.settings ?? {}), teeSet: normalizeTee(s.settings?.teeSet ?? base.settings.teeSet) };
-  const rounds = (s.rounds ?? base.rounds).map((r) => ({ ...r, teeSet: normalizeTee(r.teeSet) }));
-  return { ...base, ...s, settings, rounds, bag: s.bag?.length ? s.bag : base.bag } as State;
+  const courseId: Settings['courseId'] = s.settings?.courseId === 'sherrill1' || s.settings?.courseId === 'sherrill2' ? s.settings.courseId : 'cedar';
+  const settings = { ...base.settings, ...(s.settings ?? {}), teeSet: normalizeTee(s.settings?.teeSet ?? base.settings.teeSet), courseId };
+  const tag = (bag: Record<string, unknown> | undefined) => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(bag ?? {})) out[k.includes(':') ? k : `cedar:${k}`] = v;
+    return out;
+  };
+  const rounds = (s.rounds ?? base.rounds).map((r) => ({ ...r, teeSet: normalizeTee(r.teeSet), courseId: r.courseId === 'sherrill1' || r.courseId === 'sherrill2' ? r.courseId : 'cedar' }));
+  return { ...base, ...s, settings, rounds, plans: tag(s.plans as unknown as Record<string, unknown>) as State['plans'], pins: tag(s.pins as unknown as Record<string, unknown>) as State['pins'], bag: s.bag?.length ? s.bag : base.bag };
 }
 
 /** Called when the phone refuses to save (for example, storage is full). */

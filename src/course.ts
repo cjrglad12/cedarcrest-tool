@@ -28,6 +28,7 @@ export interface Hole {
 }
 
 export interface CourseData {
+  id?: string;
   name: string;
   fetched: string;
   source: string;

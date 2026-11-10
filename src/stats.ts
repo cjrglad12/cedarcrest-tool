@@ -182,7 +182,9 @@ const quantile = (s: number[], q: number) => {
 
 export function clubStats(course: Course, state: State): ClubStat[] {
   const byClub = new Map<string, { d: number[]; lat: number[] }>();
+  const here = course.data.id ?? 'cedar';
   for (const r of state.rounds) {
+    if ((r.courseId ?? 'cedar') !== here) continue;
     for (const h of Object.values(r.holes)) {
       if (!h.done) continue;
       for (const s of analyzeHole(course, h, state.settings.handicap).shots) {
@@ -230,7 +232,9 @@ export function effectiveBag(state: State, stats: ClubStat[]): Club[] {
 
 export function holeHistory(course: Course, state: State, ref: number, baseline = state.settings.handicap) {
   const out: { date: string; roundId: string; view: HoleView }[] = [];
+  const here = course.data.id ?? 'cedar';
   for (const r of state.rounds) {
+    if ((r.courseId ?? 'cedar') !== here) continue;
     const h = r.holes[ref];
     if (h?.done) out.push({ date: r.date, roundId: r.id, view: analyzeHole(course, h, baseline) });
   }

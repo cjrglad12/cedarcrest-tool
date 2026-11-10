@@ -1,7 +1,7 @@
 // Offline support: keep the app and course data on the phone.
 // Pages and data: use the network when it's there, fall back to the cache on the course.
-const CACHE = 'cedarcrest-v13';
-const CORE = ['./', './index.html', './data/course.json', './data/terrain.bin', './data/canopy.bin', './data/greens.bin', './manifest.webmanifest', './icon.svg'];
+const CACHE = 'cedarcrest-v14';
+const CORE = ['./', './index.html', './data/course.json', './data/terrain.bin', './data/canopy.bin', './data/greens.bin', './data/sherrill1/course.json', './data/sherrill1/terrain.bin', './data/sherrill1/canopy.bin', './data/sherrill1/greens.bin', './data/sherrill2/course.json', './data/sherrill2/terrain.bin', './data/sherrill2/canopy.bin', './data/sherrill2/greens.bin', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
