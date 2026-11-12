@@ -89,10 +89,14 @@ function plays(from: XY, to: XY) {
   const d = dist(from, to);
   const rise = app.course.height(to[0], to[1]) - app.course.height(from[0], from[1]);
   const c = cond(), brg = bearing(from, to);
-  const slopeOnly = y0(d + rise);
-  const windOnly = y0(playsLike(d, 0, { ...c, tempF: 70 }, brg)) - y0(d);
-  const tempOnly = y0(playsLike(d, 0, { ...c, windMph: 0, gustMph: 0 }, brg)) - y0(d);
-  return { d: y0(d), plays: y0(playsLike(d, rise, c, brg)), riseFt: Math.round(rise * 3.28), parts: { slope: slopeOnly - y0(d), wind: windOnly, temp: tempOnly } };
+  // Wind and air change carry. Past one full shot (a par 4 or 5 from the tee) the ball
+  // also rolls and lay-ups fly lower, so only about 60% of the carry effect shows up
+  // in the total; applying all of it made long holes read 10%+ too long in wind.
+  const k = d > 210 ? 0.6 : 1;
+  const wind = (playsLike(d, 0, { ...c, tempF: 70 }, brg) - d) * k;
+  const temp = (playsLike(d, 0, { ...c, windMph: 0, gustMph: 0 }, brg) - d) * k;
+  const m = d + rise + wind + temp;
+  return { d: y0(d), plays: y0(m), riseFt: Math.round(rise * 3.28), parts: { slope: y0(d + rise) - y0(d), wind: Math.round(toYds(wind)), temp: Math.round(toYds(temp)) } };
 }
 
 /** Why the plays-as number differs from the yardage, in a few words. */
