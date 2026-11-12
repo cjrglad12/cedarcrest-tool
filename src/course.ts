@@ -54,6 +54,12 @@ export interface CourseData {
 }
 
 export const YD = 0.9144;
+/** Shortest distance from p to the segment a–b. */
+export function segDist(p: XY, a: XY, b: XY) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+  const t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L)) : 0;
+  return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
+}
 export const toYds = (m: number) => m / YD;
 export const dist = (a: XY, b: XY) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 /** Compass bearing in degrees (0 = north, 90 = east) from a to b. */
@@ -310,25 +316,73 @@ export class Course {
   }
 
   /** Bunkers and water near the line from `from` to the pin, with reach/carry distances. */
+  /**
+   * The line of play from `from` to the pin: the rest of the hole's center line.
+   * `project` gives a point's distance along it and its offset (+ right, - left).
+   */
+  playLine(hole: Hole, from: XY, pin: XY = hole.pin) {
+    const mid = hole.line.slice(1, -1);
+    // Keep the bend points still ahead of `from`.
+    const full: XY[] = [hole.line[0], ...mid, pin];
+    let bestSeg = 0, bestD = Infinity;
+    for (let i = 1; i < full.length; i++) {
+      const d = segDist(from, full[i - 1], full[i]);
+      if (d < bestD) { bestD = d; bestSeg = i; }
+    }
+    const pts: XY[] = [from, ...full.slice(bestSeg, -1).filter((p) => dist(p, from) > 5), pin];
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + dist(pts[i - 1], pts[i]));
+    const length = cum[cum.length - 1];
+    const project = (p: XY) => {
+      let best = { along: 0, off: Infinity };
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+        const ux = dx / L, uy = dy / L, px = p[0] - a[0], py = p[1] - a[1];
+        let t = px * ux + py * uy;
+        // Past the ends of the first and last legs, keep measuring along the leg.
+        if (i > 1) t = Math.max(0, t);
+        if (i < pts.length - 1) t = Math.min(L, t);
+        const off = -(ux * py - uy * px); // right of the line is positive
+        const perp = Math.hypot(px - ux * t, py - uy * t);
+        if (perp < Math.abs(best.off)) best = { along: cum[i - 1] + t, off: Math.sign(off || 1) * perp };
+      }
+      return best;
+    };
+    return { pts, length, project };
+  }
+
+  /**
+   * Bunkers and water in play from `from`: only the part of each that lies in the
+   * corridor along the line of play (15–40 m either side, not past the green),
+   * so a long pond or creek reports the carry over the part you actually cross.
+   */
   hazards(hole: Hole, from: XY, pin: XY = hole.pin) {
-    const toPin = dist(from, pin);
-    const brg = bearing(from, pin);
+    const line = this.playLine(hole, from, pin);
+    const toPin = line.length;
+    const green = this.greenOf(hole);
+    const backOfGreen = green ? Math.max(toPin, ...green.rings[0].map((p) => line.project(p).along)) : toPin + 10;
+    // In play: a corridor that widens with distance like shot dispersion (15 m near you, 40 m at driver range).
+    const wide = (along: number) => Math.min(40, 15 + 0.11 * along);
     const out: { id: string; kind: Kind; side: 'left' | 'right' | 'center'; reach: number; carry: number; offset: number }[] = [];
     for (const f of this.features) {
       if (f.kind !== 'bunker' && f.kind !== 'water') continue;
       if (f.id === hole.greenId) continue;
-      let reach = Infinity, carry = -Infinity, minOff = Infinity, offSum = 0, n = 0, alongMin = Infinity;
-      for (const ring of f.rings) for (const p of ring) {
-        const d = dist(from, p);
-        const rel = ((bearing(from, p) - brg + 540) % 360) - 180;
-        const along = d * Math.cos((rel * Math.PI) / 180);
-        const off = d * Math.sin((rel * Math.PI) / 180);
-        reach = Math.min(reach, d); carry = Math.max(carry, d);
-        minOff = Math.min(minOff, Math.abs(off)); offSum += off; n++;
-        alongMin = Math.min(alongMin, along);
+      let reach = Infinity, carry = -Infinity, offSum = 0, n = 0;
+      for (const ring of f.rings) {
+        for (let i = 0; i < ring.length; i++) {
+          // Walk each edge in short steps so big shapes with few corners still clip cleanly.
+          const a = ring[i], b = ring[(i + 1) % ring.length];
+          const steps = Math.max(1, Math.ceil(dist(a, b) / 4));
+          for (let k = 0; k < steps; k++) {
+            const p: XY = [a[0] + ((b[0] - a[0]) * k) / steps, a[1] + ((b[1] - a[1]) * k) / steps];
+            const { along, off } = line.project(p);
+            if (Math.abs(off) > wide(along) || along < 5 || along > backOfGreen + 5) continue;
+            reach = Math.min(reach, along); carry = Math.max(carry, along);
+            offSum += off; n++;
+          }
+        }
       }
-      // Only hazards ahead, within play, and not far past the pin.
-      if (alongMin < 5 || reach > toPin + 25 || minOff > 45) continue;
+      if (!n || reach > toPin + 25) continue;
       const mean = offSum / n;
       out.push({ id: f.id, kind: f.kind, side: Math.abs(mean) < 8 ? 'center' : mean < 0 ? 'left' : 'right', reach, carry, offset: mean });
     }
@@ -400,8 +454,16 @@ function raySegment(o: XY, d: XY, a: XY, b: XY): number | null {
 }
 
 /** Tee box used to stand on the map. Card yardages are separate. Longest box is Black. */
-export function teeFor(hole: Hole, set: 'black' | 'gold' | 'silver' | 'ruby'): TeeBox {
+/**
+ * The tee box for a tee set. Mapped tee boxes are ordered back to front, so by default
+ * the set picks by position; when the card's yardage is known, the box whose length
+ * matches it best wins instead (courses don't map every set's box in order).
+ */
+export function teeFor(hole: Hole, set: 'black' | 'gold' | 'silver' | 'ruby', cardYds?: number): TeeBox {
   const t = hole.tees;
   const idx = set === 'black' ? 0 : set === 'gold' ? 1 : set === 'silver' ? Math.min(2, t.length - 1) : t.length - 1;
-  return t[Math.min(idx, Math.max(0, t.length - 1))]!;
+  const byPos = t[Math.min(idx, Math.max(0, t.length - 1))]!;
+  if (!cardYds || t.length < 2) return byPos;
+  const best = t.reduce((a, b) => (Math.abs(b.lengthYds - cardYds) < Math.abs(a.lengthYds - cardYds) ? b : a));
+  return Math.abs(byPos.lengthYds - cardYds) - Math.abs(best.lengthYds - cardYds) > 12 ? best : byPos;
 }

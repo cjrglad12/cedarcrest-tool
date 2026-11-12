@@ -3,12 +3,27 @@
 // Run with: npm run fetch-course
 import { writeFile, mkdir, readFile } from 'node:fs/promises';
 
-const COURSE_NAME = 'Cedar Crest Golf Course';
-// Search area (lon/lat) that contains the whole course.
-const SEARCH = { minLon: -96.805, minLat: 32.703, maxLon: -96.772, maxLat: 32.742 };
+// Which course to build: `node scripts/fetch-course.mjs` (Cedar Crest) or
+// `node scripts/fetch-course.mjs waterchase`.
+const CONFIGS = {
+  cedar: {
+    name: 'Cedar Crest', match: { name: 'Cedar Crest Golf Course' }, out: '../public/data/', overrides: './course-overrides.json',
+    // Search area (lon/lat) that contains the whole course.
+    search: { minLon: -96.805, minLat: 32.703, maxLon: -96.772, maxLat: 32.742 },
+  },
+  waterchase: {
+    // The OSM course outline has no name tag, so it's picked by its way id.
+    name: 'Waterchase', match: { way: '28382130' }, out: '../public/data/waterchase/', overrides: './waterchase-overrides.json',
+    search: { minLon: -97.174, minLat: 32.745, maxLon: -97.126, maxLat: 32.793 },
+  },
+};
+const CFG = CONFIGS[process.argv[2] ?? 'cedar'];
+if (!CFG) throw new Error(`Unknown course ${process.argv[2]}`);
+const COURSE_NAME = CFG.match.name;
+const SEARCH = CFG.search;
 const TILE = 0.012; // degrees per OSM API request
 const CELL = 2; // terrain grid spacing in meters
-const OUT = new URL('../public/data/', import.meta.url);
+const OUT = new URL(CFG.out, import.meta.url);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -166,7 +181,18 @@ async function fetchCanopy(cols, rows, bounds) {
  * may nudge the edges) and samples each grid point from where the returned image says
  * its pixels really are, so the grid lines up exactly.
  */
+// Tiles are cached on disk so an interrupted run picks up where it stopped.
+const TILE_CACHE = '/tmp/course-elev-cache/';
 async function elevationTile(x0, y0, w, h, cell) {
+  const { existsSync } = await import('node:fs');
+  const key = `${TILE_CACHE}${CFG.name}-${x0.toFixed(1)}_${y0.toFixed(1)}_${w}_${h}_${cell}.f32`;
+  if (existsSync(key)) { const b = await readFile(key); return new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4); }
+  const out = await elevationTileFetch(x0, y0, w, h, cell);
+  await mkdir(TILE_CACHE, { recursive: true });
+  await writeFile(key, Buffer.from(out.buffer, out.byteOffset, out.byteLength));
+  return out;
+}
+async function elevationTileFetch(x0, y0, w, h, cell) {
   const { fromArrayBuffer } = await import('geotiff');
   const PAD = 4;
   const bx0 = x0 - PAD * cell, by0 = y0 - PAD * cell, bx1 = x0 + (w - 1 + PAD) * cell, by1 = y0 + (h - 1 + PAD) * cell;
@@ -211,8 +237,8 @@ async function main() {
 
   // Course boundary
   let boundaryElem = null, boundaryType = null;
-  for (const [id, w] of ways) if (w.tags.leisure === 'golf_course' && w.tags.name === COURSE_NAME) { boundaryElem = w; boundaryType = 'way'; }
-  for (const [id, r] of rels) if (r.tags.leisure === 'golf_course' && r.tags.name === COURSE_NAME) { boundaryElem = r; boundaryType = 'relation'; }
+  for (const [id, w] of ways) if (w.tags.leisure === 'golf_course' && (CFG.match.way ? id === CFG.match.way : w.tags.name === COURSE_NAME)) { boundaryElem = w; boundaryType = 'way'; }
+  for (const [id, r] of rels) if (r.tags.leisure === 'golf_course' && !CFG.match.way && r.tags.name === COURSE_NAME) { boundaryElem = r; boundaryType = 'relation'; }
   if (!boundaryElem) throw new Error('Course boundary not found');
 
   // Origin = center of boundary nodes
@@ -388,6 +414,7 @@ async function main() {
     const c0 = tx * TILE_PX, r0 = ty * TILE_PX;
     const w = Math.min(cols, c0 + TILE_PX) - c0, h = Math.min(rows, r0 + TILE_PX) - r0;
     const tile = await elevationTile(bounds.minX + c0 * CELL, bounds.minY + r0 * CELL, w, h, CELL);
+    if ((ty * tilesX + tx + 1) % 25 === 0) console.log(`  ${ty * tilesX + tx + 1}/${tilesX * tilesY} tiles`);
     for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) data[(r0 + r) * cols + c0 + c] = tile[r * w + c];
   }
   let minH = Infinity, maxH = -Infinity;
@@ -426,7 +453,7 @@ async function main() {
   console.log(`Trees (4 m+) cover ${((100 * treeCells) / canopy.length).toFixed(0)}% of the area`);
 
   // Scorecard corrections (par, stroke index, tee names and ratings).
-  const overrides = JSON.parse(await readFile(new URL('./course-overrides.json', import.meta.url), 'utf8'));
+  const overrides = JSON.parse(await readFile(new URL(CFG.overrides, import.meta.url), 'utf8'));
   for (const h of holes) {
     if (overrides.par?.[h.ref]) h.par = overrides.par[h.ref];
     if (overrides.strokeIndex?.[h.ref - 1]) h.handicap = overrides.strokeIndex[h.ref - 1];
@@ -437,7 +464,7 @@ async function main() {
   await writeFile(new URL('canopy.bin', OUT), Buffer.from(canopy.buffer));
   await writeFile(new URL('greens.bin', OUT), Buffer.from(greensBin.buffer));
   const course = {
-    name: 'Cedar Crest',
+    name: CFG.name,
     fetched: new Date().toISOString().slice(0, 10),
     source: 'OpenStreetMap contributors (ODbL); USGS 3DEP elevation',
     origin, metersPerDeg: { x: kx, y: ky },
@@ -451,7 +478,7 @@ async function main() {
     tees: overrides.tees ?? {},
   };
   await writeFile(new URL('course.json', OUT), JSON.stringify(course));
-  console.log('Wrote public/data/course.json and terrain.bin');
+  console.log(`Wrote ${OUT.pathname}course.json and terrain.bin`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
