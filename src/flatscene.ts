@@ -88,6 +88,10 @@ export class FlatScene {
     this.canvas.height = Math.max(1, Math.round(r.height * dpr));
     this.canvas.style.width = `${r.width}px`;
     this.canvas.style.height = `${r.height}px`;
+    // Keep the hole framed when the panel or window changes size (unless you moved the map).
+    if (!this.userMoved && this.hole) {
+      if (this.puttActive && this.putt) this.puttView('above'); else this.view(this.currentView);
+    }
     this.render();
   }
 
@@ -132,10 +136,14 @@ export class FlatScene {
       const ex = pts.map((p) => p[0] * Math.cos(rr) - p[1] * Math.sin(rr));
       const ny = pts.map((p) => p[0] * Math.sin(rr) + p[1] * Math.cos(rr));
       const e0 = Math.min(...ex), e1 = Math.max(...ex), n0 = Math.min(...ny), n1 = Math.max(...ny);
-      const padTop = 56 * (this.W / Math.max(1, this.canvas.getBoundingClientRect().width || 1));
-      const usableH = Math.max(50, this.H - padTop - marginPx * 2), usableW = Math.max(50, this.W - marginPx * 2);
+      const vr = this.canvas.getBoundingClientRect(), k = this.W / Math.max(1, vr.width || 1);
+      const padTop = 56 * k;
+      // On phones the bottom panel covers the lower part of the map.
+      const sheet = document.getElementById('sheet')?.getBoundingClientRect();
+      const padBottom = sheet && sheet.left < vr.right - 10 && sheet.top < vr.bottom ? Math.max(0, Math.min(vr.height * 0.6, vr.bottom - sheet.top)) * k : 0;
+      const usableH = Math.max(50, this.H - padTop - padBottom - marginPx * 2), usableW = Math.max(50, this.W - marginPx * 2);
       this.scale = Math.min(usableW / Math.max(1, e1 - e0), usableH / Math.max(1, n1 - n0));
-      const ce = (e0 + e1) / 2, cn = (n0 + n1) / 2 + (padTop / 2) / this.scale;
+      const ce = (e0 + e1) / 2, cn = (n0 + n1) / 2 + ((padTop - padBottom) / 2) / this.scale;
       this.center = [ce * Math.cos(rr) + cn * Math.sin(rr), -ce * Math.sin(rr) + cn * Math.cos(rr)];
     };
     if (name === 'course') {
