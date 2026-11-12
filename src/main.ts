@@ -5,11 +5,12 @@ import { tipsFor, isWet, Tip } from './tips';
 import { roundRecap, whereToMiss, whichSide, blockedPlay, MissAdvice, SideAdvice, BlockedPlay } from './insights';
 import { Course, Hole, XY, Lie, dist, bearing, toYds, teeFor, pointInFeature, fromBearing, ringCentroid } from './course';
 import { HoleScene, dispersion, ViewName } from './scene';
+import { FlatScene } from './flatscene';
 import { Conditions, fetchConditions, windComponents, playsLike, compass, outlookNotes } from './conditions';
 import { suggest, buildPlan, evaluate, Option, Ctx } from './advice';
 import { analyzeRound, analyzeHole, clubStats, effectiveBag, holeHistory, ClubStat, scoringStats, differential, courseHandicap, adjustedGross } from './stats';
 import { CATEGORY_LABEL, Category } from './sg';
-import { loadState, saveState, saveNow, migrate, uid, freshState, recoveredFrom, setSaveErrorHandler, State, Round, HoleRec, HolePlan, TeeSet, Club, DEFAULT_BAG } from './store';
+import { loadState, saveState, saveNow, setTee, switchCourse, migrate, uid, freshState, recoveredFrom, setSaveErrorHandler, State, Round, HoleRec, HolePlan, TeeSet, Club, DEFAULT_BAG } from './store';
 import { cardHole, cardTotal, cardSource, TEE_SETS, setActiveCourse, courseInfo, courseList, type CourseId } from './card';
 import { clubSentence, par5Sentence } from './copy';
 
@@ -55,7 +56,7 @@ const hole = (): Hole => app.course.hole(app.ref);
 const round = (): Round | null => S().rounds.find((r) => r.id === S().activeRoundId) ?? null;
 const holeRec = (): HoleRec | null => round()?.holes[app.ref] ?? null;
 const teeSet = (): TeeSet => round()?.teeSet ?? S().settings.teeSet;
-const tee = () => teeFor(hole(), teeSet());
+const tee = () => teeFor(hole(), teeSet(), cardHole(hole().ref, teeSet()).yards);
 const planPin = (): XY => S().pins[pkey()] ?? hole().pin;
 const pin = (): XY => (app.tab === 'play' && holeRec()?.pin) || planPin();
 const cond = (): Conditions => round()?.conditions ?? S().conditions;
@@ -87,7 +88,21 @@ function toast(msg: string, ms = 2200, warning = false) {
 function plays(from: XY, to: XY) {
   const d = dist(from, to);
   const rise = app.course.height(to[0], to[1]) - app.course.height(from[0], from[1]);
-  return { d: y0(d), plays: y0(playsLike(d, rise, cond(), bearing(from, to))), riseFt: Math.round(rise * 3.28) };
+  const c = cond(), brg = bearing(from, to);
+  const slopeOnly = y0(d + rise);
+  const windOnly = y0(playsLike(d, 0, { ...c, tempF: 70 }, brg)) - y0(d);
+  const tempOnly = y0(playsLike(d, 0, { ...c, windMph: 0, gustMph: 0 }, brg)) - y0(d);
+  return { d: y0(d), plays: y0(playsLike(d, rise, c, brg)), riseFt: Math.round(rise * 3.28), parts: { slope: slopeOnly - y0(d), wind: windOnly, temp: tempOnly } };
+}
+
+/** Why the plays-as number differs from the yardage, in a few words. */
+function playsWhy(parts: { slope: number; wind: number; temp: number }): string {
+  const bits: string[] = [];
+  const say = (v: number, up: string, down: string) => { if (Math.abs(v) >= 2) bits.push(`${v > 0 ? '+' : '−'}${Math.abs(v)} ${v > 0 ? up : down}`); };
+  say(parts.slope, 'uphill', 'downhill');
+  say(parts.wind, 'wind', 'wind');
+  say(parts.temp, 'cold air', 'warm air');
+  return bits.join(', ');
 }
 
 function windPlain(from: XY, to: XY) {
@@ -171,10 +186,13 @@ function welcome() {
       if (w === 'course') {
         const id = b.dataset.v as CourseId;
         if (id !== courseNow()) {
-          S().settings.courseId = id;
+          setTee(S(), tees);
+          switchCourse(S(), id);
+          tees = S().settings.teeSet;
+          app.ref = 1;
           saveNow(S());
-          closeModal();
-          void openCourse().then(() => welcome());
+          void openCourse().then(draw);
+          draw();
           return;
         }
       }
@@ -183,7 +201,8 @@ function welcome() {
         const base = S().bag.find((c) => c.name === 'Driver')?.yds ?? 230;
         const k = drv / base;
         S().bag = S().bag.map((c) => ({ ...c, yds: Math.round(c.yds * k) }));
-        Object.assign(S().settings, { handicap: hcp, teeSet: tees, onboarded: true, simple: true });
+        Object.assign(S().settings, { handicap: hcp, onboarded: true, simple: true });
+        setTee(S(), tees);
         saveNow(S()); refreshBag(); closeModal(); refresh({ camera: true });
         return;
       }
@@ -348,7 +367,8 @@ function shotNumbers(from: XY, pinXY: XY) {
   const rawMap = y0(gd.pin);
   const me = myPos();
   const atTee = dist(from, tee().center) < 20 && (!me || dist(me, tee().center) < 25);
-  if (!atTee) return { plays: pl.plays, raw: rawMap, front: y0(gd.front), back: y0(gd.back) };
+  const why = playsWhy(pl.parts);
+  if (!atTee) return { plays: pl.plays, raw: rawMap, front: y0(gd.front), back: y0(gd.back), why };
   const plate = cardHole(h.ref, teeSet());
   const delta = pl.plays - rawMap;
   return {
@@ -356,6 +376,7 @@ function shotNumbers(from: XY, pinXY: XY) {
     raw: plate.yards,
     front: Math.max(1, plate.yards - (rawMap - y0(gd.front))),
     back: plate.yards + (y0(gd.back) - rawMap),
+    why,
   };
 }
 
@@ -371,7 +392,8 @@ function renderDecision(from: XY, pinXY: XY): string {
   const club = n.plays >= 30 ? clubSentence(n.plays, app.bag) : 'On the green.';
   const wind = windPlain(from, pinXY);
   return `<div class="decision">
-      <div class="plays"><b>${n.plays}</b><span>${n.plays !== n.raw ? `${n.raw} yards` : 'yards'}</span></div>
+      <div class="plays"><b>${n.plays}</b><span>${n.plays !== n.raw ? `plays · ${n.raw} yards` : 'yards, plays as it reads'}</span></div>
+      ${n.plays !== n.raw && n.why ? `<div class="playswhy">${n.why}</div>` : ''}
       <div class="ends"><span>Front ${n.front}</span><span>Back ${n.back}</span></div>
       <div class="clubline">${club}</div>
       ${side}${approach}${trees ? `<div class="miss">${trees}</div>` : ''}
@@ -525,7 +547,8 @@ function teeSideHtml() {
       const teeCtx = { ...ctx(t, 'tee'), hole: h };
       const target = step?.target ?? suggest(teeCtx, 1)[0]?.aim;
       const a = target ? whichSide(teeCtx, target) : null;
-      sideCache.set(key, { advice: a, html: a ? `<div class="miss">Favor the <b>${a.favor}</b>. ${a.favor === 'left' ? 'Right' : 'Left'} is the side that costs you${S().settings.simple || a.spread < 0.3 ? '' : `, about ${a.spread.toFixed(1)} strokes`}.</div>` : '' });
+      sideCache.set(key, { advice: a, html: a ? `<div class="miss">Favor the <b>${a.favor}</b>. ${a.favor === 'left' ? 'Right' : 'Left'} is the side that costs you${S().settings.simple || a.spread < 0.3 ? '' : `, about ${a.spread.toFixed(1)} strokes`}.</div>`
+        : target ? '<div class="miss">No bad side off this tee. A miss either way costs about the same, so aim at the middle of the fairway.</div>' : '' });
     }
     const slot = document.querySelector(`[data-side="${CSS.escape(key)}"]`);
     if (slot) { slot.outerHTML = sideCache.get(key)!.html; redraw(); }
@@ -618,7 +641,7 @@ function renderPlay(): string {
       ${roundFooter()}`;
   }
 
-  const moreBtn = `<button class="btn wide" data-act="more">${app.more ? 'Less' : 'More'}</button>`;
+  const moreBtn = `<button class="btn wide" data-act="more">${app.more ? 'Hide extras' : rec.quick ? 'Fairway, penalties, carries' : 'Shot list, carries, other clubs'}</button>`;
 
   if (rec.quick) {
     const strokes = rec.strokes ?? par;
@@ -627,13 +650,13 @@ function renderPlay(): string {
       <div class="elev">${elevText(from, rec.pin)}</div>
       ${me ? lieHtml(me, rec.pin) : ''}
       ${h.par >= 4 ? `<div class="small" style="margin-top:10px">Tee shot</div><div class="seg">${(['left', 'hit', 'right'] as const).map((v) => `<button class="${rec!.fairway === v ? 'on' : ''}" data-act="fw" data-v="${v}">${{ left: 'Left', hit: 'Fairway', right: 'Right' }[v]}</button>`).join('')}</div>` : ''}
-      <div class="row spread" style="margin-top:10px"><span class="small">Penalty strokes</span><div class="stepper"><button data-act="pens" data-d="-1" aria-label="One less penalty">−</button><b>${rec.penalties ?? 0}</b><button data-act="pens" data-d="1" aria-label="One more penalty">+</button></div></div>
+      <div class="row spread" style="margin-top:10px"><span class="small">Penalty strokes</span><div class="stepper"><button data-act="pens" data-d="-1" aria-label="Remove a penalty">−</button><b>${rec.penalties ?? 0}</b><button data-act="pens" data-d="1" aria-label="Add a penalty">+</button></div></div>
       <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="trackmode">Track shots</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="pinsheet">Pin</button></div>` : '';
     return `${decision}
       ${where}
       <div class="scorebox">
-        <div><div class="small">Score</div><div class="stepper big"><button data-act="qs" data-d="-1" aria-label="One less stroke">−</button><b>${strokes}</b><button data-act="qs" data-d="1" aria-label="One more stroke">+</button></div><div class="tiny">${strokes - par === 0 ? 'Par' : toPar(strokes - par)}</div></div>
-        <div><div class="small">Putts</div><div class="stepper big"><button data-act="putt" data-d="-1" aria-label="One less putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="One more putt">+</button></div></div>
+        <div><div class="small">Score</div><div class="stepper big"><button data-act="qs" data-d="-1" aria-label="Remove a stroke">−</button><b>${strokes}</b><button data-act="qs" data-d="1" aria-label="Add a stroke">+</button></div><div class="tiny">${strokes - par === 0 ? 'Par' : toPar(strokes - par)}</div></div>
+        <div><div class="small">Putts</div><div class="stepper big"><button data-act="putt" data-d="-1" aria-label="Remove a putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="Add a putt">+</button></div></div>
       </div>
       <button class="btn primary wide" style="margin-top:12px" data-act="savehole">Save hole ${h.ref}</button>
       ${moreBtn}
@@ -649,6 +672,7 @@ function renderPlay(): string {
       ${app.options ? renderOptions() : `<button class="btn" data-act="playopts">Other clubs</button>`}
       ${rec.shots.length ? `<ul class="list">${hv.shots.map((s, i) => `<li><span class="step" style="background:var(--chip)">${i + 1}</span>
         <div class="grow"><b>${s.club}</b> <span class="small">${Math.round(s.yds)} yds · ${s.startLie}</span></div>
+        <button class="btn sm" data-act="pen" data-i="${i}" aria-label="Penalty strokes on this shot">${rec.shots[i]?.penalty ? `+${rec.shots[i].penalty} penalty` : 'Penalty'}</button>
         <button class="btn sm" data-act="delshot" data-i="${i}" aria-label="Delete shot">Delete</button></li>`).join('')}</ul>` : ''}
       <div class="row wrap" style="margin-top:8px"><button class="btn sm" data-act="quick">Just the score</button><button class="btn sm" data-act="scorecard">Scorecard</button><button class="btn sm" data-act="pinsheet">Pin</button><button class="btn sm" data-act="readputt">Read the putt</button></div>` : '';
   return `${decision}
@@ -656,7 +680,7 @@ function renderPlay(): string {
     <button class="btn primary wide big" data-act="mark">Mark shot ${nextIdx + 1}</button>
     ${rec.shots.length ? `<button class="btn wide" data-act="ongreen">${rec.greenMark ? 'Move the mark' : 'On the green'}</button>` : ''}
     <div class="row spread" style="margin-top:10px">
-      <div><div class="small">Putts</div><div class="stepper"><button data-act="putt" data-d="-1" aria-label="One less putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="One more putt">+</button></div></div>
+      <div><div class="small">Putts</div><div class="stepper"><button data-act="putt" data-d="-1" aria-label="Remove a putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="Add a putt">+</button></div></div>
       <button class="btn primary" data-act="finish" ${rec.shots.length ? '' : 'disabled'}>Save hole</button>
     </div>
     ${rec.shots.length ? '<button class="btn wide" data-act="holedout">Holed out from off the green</button>' : ''}
@@ -762,7 +786,7 @@ function copyForGhin(roundId?: string) {
   if (!r) return;
   const views = analyzeRound(app.course, r, S().settings.handicap).holes;
   const line = (v: (typeof views)[number]) => `${v.ref}: ${v.score} (${v.putts} putt${v.putts === 1 ? '' : 's'}${v.fairway === null ? '' : v.fairway ? ', FIR' : `, missed ${v.fairwayMiss ?? 'fairway'}`}${v.gir ? ', GIR' : ''}${v.penalties ? `, ${v.penalties} pen` : ''})`;
-  const text = [`Cedar Crest · ${new Date(r.date).toLocaleDateString()} · ${teeName(r.teeSet)} tees`, ...views.map(line), `Total ${views.reduce((a, v) => a + v.score, 0)} over ${views.length} holes`].join('\n');
+  const text = [`${courseInfo((r.courseId ?? "cedar") as CourseId).name} · ${new Date(r.date).toLocaleDateString()} · ${teeName(r.teeSet)} tees`, ...views.map(line), `Total ${views.reduce((a, v) => a + v.score, 0)} over ${views.length} holes`].join('\n');
   navigator.clipboard.writeText(text).then(() => toast('Copied. Paste into notes, then enter in GHIN.'), () => toast("Couldn't copy here. Take a screenshot of the scorecard instead."));
 }
 
@@ -1322,7 +1346,7 @@ function importData() {
       if (!(await ask(`Replace your data with this backup (${data.rounds.length} rounds)?`, 'Replace', true))) return;
       app.state = migrate(data);
       saveNow(S()); refreshBag(); closeModal(); refresh(); toast('Backup restored');
-    } catch { toast('That file is not a Cedar Crest backup.'); }
+    } catch { toast('That file is not a backup from this app.'); }
   };
   inp.click();
 }
@@ -1479,13 +1503,14 @@ function onClick(e: Event) {
       const id = el.dataset.v as CourseId;
       if (!id || id === courseNow()) break;
       if (round()) { toast("Save and stop, or don't save, before changing course"); break; }
-      S().settings.courseId = id;
+      switchCourse(S(), id);
+      app.ref = 1; app.measure = null; app.mode = null; app.options = null;
       saveNow(S());
       closeModal();
       void openCourse();
       break;
     }
-    case 'teeset': S().settings.teeSet = el.dataset.v as TeeSet; save(); refresh(); break;
+    case 'teeset': setTee(S(), el.dataset.v as TeeSet); save(); refresh(); break;
     case 'startround': startRound(); break;
     case 'trackshots': S().settings.trackShots = el.dataset.v === '1'; save(); renderPanel(); break;
     case 'scorecard': scorecard(el.dataset.id); break;
@@ -1500,8 +1525,10 @@ function onClick(e: Event) {
       rec.done = true; saveNow(S()); refreshBag();
       const v = analyzeHole(app.course, rec, S().settings.handicap);
       toast(`Hole ${app.ref}: ${v.score}`);
-      if (app.ref === 18 || Object.values(round()!.holes).filter((x) => x.done).length >= 18) { scorecard(); refresh(); }
-      else goHole(app.ref + 1);
+      // Stay on the hole and show its score; "Next hole" is the one way forward.
+      app.options = null; app.more = false;
+      if (app.ref === 18 || Object.values(round()!.holes).filter((x) => x.done).length >= 18) scorecard();
+      refresh();
     } break;
     case 'endround':
       ask('Save the holes you finished and stop?', 'Save and stop').then((ok) => {
@@ -1574,6 +1601,7 @@ function onChange(e: Event) {
       v = h;
     }
     (S().settings as any)[k] = v;
+    if (k === 'teeSet') setTee(S(), v as TeeSet);
     save();
     if (k === 'exaggerate') app.scene.setExaggeration(v as number);
     if (k === 'simulateGps' && !v) app.sim = null;
@@ -1620,6 +1648,19 @@ function bindScene() {
   app.scene.setExaggeration(S().settings.exaggerate);
 }
 
+/** The 3D map, or a flat 2D map when this browser can't run WebGL. */
+function makeScene(view: HTMLElement, course: Course): HoleScene {
+  const forceFlat = new URLSearchParams(location.search).has('flat');
+  if (!forceFlat) {
+    try {
+      const probe = document.createElement('canvas');
+      if (probe.getContext('webgl2') || probe.getContext('webgl')) return new HoleScene(view, course);
+    } catch { /* fall through to the flat map */ }
+    view.innerHTML = '';
+  }
+  return new FlatScene(view, course) as unknown as HoleScene;
+}
+
 async function openCourse() {
   setActiveCourse(courseNow());
   const baseUrl = new URL(location.href);
@@ -1640,7 +1681,7 @@ async function openCourse() {
   app.fixes = [];
   app.sim = null;
   app.putt = null;
-  app.scene = new HoleScene(view, app.course);
+  app.scene = makeScene(view, app.course);
   bindScene();
   document.title = courseInfo().name;
   refreshBag();
@@ -1648,7 +1689,13 @@ async function openCourse() {
   if (weatherAge() > 60_000) void getWeather(true);
 }
 
+/** Screen readers: buttons in a choice row say whether they're the one picked. */
+function syncPressed() {
+  for (const b of document.querySelectorAll<HTMLElement>('.seg button')) b.setAttribute('aria-pressed', b.classList.contains('on') ? 'true' : 'false');
+}
+
 async function boot() {
+  new MutationObserver(syncPressed).observe(document.body, { childList: true, subtree: true });
   try {
     await openCourse();
   } catch {
@@ -1679,6 +1726,7 @@ async function boot() {
   if ('serviceWorker' in navigator && location.hostname.endsWith('github.io')) navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 }
+(window as unknown as { __app: typeof app }).__app = app;
 let started = false;
 export function start() {
   if (started) return;

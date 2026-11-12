@@ -69,6 +69,9 @@ export interface Round {
 }
 
 export type TeeSet = 'black' | 'gold' | 'silver' | 'ruby';
+export type CourseKey = 'cedar' | 'sherrill1' | 'sherrill2' | 'waterchase';
+export const COURSE_KEYS: CourseKey[] = ['cedar', 'sherrill1', 'sherrill2', 'waterchase'];
+const courseKey = (v: unknown): CourseKey => (COURSE_KEYS.includes(v as CourseKey) ? (v as CourseKey) : 'cedar');
 
 export interface Settings {
   handicap: number;
@@ -94,7 +97,9 @@ export interface Settings {
   simple: boolean; // plain words, fewer numbers
   bigText: boolean;
   /** cedar, sherrill1, or sherrill2. */
-  courseId: 'cedar' | 'sherrill1' | 'sherrill2';
+  courseId: CourseKey;
+  /** Tees picked on each course (teeSet is the one for the course in use). */
+  teeByCourse?: Record<string, TeeSet>;
   /** Tee rating overrides belong to one course. */
   ratingsCourse?: string;
 }
@@ -151,14 +156,18 @@ export function normalizeTee(v: unknown): TeeSet {
 
 export function migrate(s: Partial<State>): State {
   const base = freshState();
-  const courseId: Settings['courseId'] = s.settings?.courseId === 'sherrill1' || s.settings?.courseId === 'sherrill2' ? s.settings.courseId : 'cedar';
-  const settings = { ...base.settings, ...(s.settings ?? {}), teeSet: normalizeTee(s.settings?.teeSet ?? base.settings.teeSet), courseId };
+  const courseId = courseKey(s.settings?.courseId);
+  const teeSet = normalizeTee(s.settings?.teeSet ?? base.settings.teeSet);
+  const teeByCourse: Record<string, TeeSet> = {};
+  for (const [k, v] of Object.entries(s.settings?.teeByCourse ?? {})) teeByCourse[k] = normalizeTee(v);
+  teeByCourse[courseId] = teeSet;
+  const settings = { ...base.settings, ...(s.settings ?? {}), teeSet, courseId, teeByCourse };
   const tag = (bag: Record<string, unknown> | undefined) => {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(bag ?? {})) out[k.includes(':') ? k : `cedar:${k}`] = v;
     return out;
   };
-  const rounds = (s.rounds ?? base.rounds).map((r) => ({ ...r, teeSet: normalizeTee(r.teeSet), courseId: r.courseId === 'sherrill1' || r.courseId === 'sherrill2' ? r.courseId : 'cedar' }));
+  const rounds = (s.rounds ?? base.rounds).map((r) => ({ ...r, teeSet: normalizeTee(r.teeSet), courseId: courseKey(r.courseId) }));
   return { ...base, ...s, settings, rounds, plans: tag(s.plans as unknown as Record<string, unknown>) as State['plans'], pins: tag(s.pins as unknown as Record<string, unknown>) as State['pins'], bag: s.bag?.length ? s.bag : base.bag };
 }
 
@@ -167,6 +176,17 @@ export let onSaveError: (e: unknown) => void = (e) => console.error('save failed
 export function setSaveErrorHandler(fn: (e: unknown) => void) { onSaveError = fn; }
 
 /** Save right away: the data is small, and a delayed save can be lost if the app is closed. */
+/** Remember the tees for the course in use, and switch to another course with its own tees. */
+export function setTee(s: State, t: TeeSet) {
+  s.settings.teeSet = t;
+  s.settings.teeByCourse = { ...(s.settings.teeByCourse ?? {}), [s.settings.courseId]: t };
+}
+export function switchCourse(s: State, id: CourseKey) {
+  setTee(s, s.settings.teeSet);
+  s.settings.courseId = id;
+  s.settings.teeSet = s.settings.teeByCourse?.[id] ?? 'gold';
+}
+
 export function saveState(s: State, storage: Pick<Storage, 'setItem'> = localStorage) {
   try { storage.setItem(KEY, JSON.stringify(s)); } catch (e) { onSaveError(e); }
 }

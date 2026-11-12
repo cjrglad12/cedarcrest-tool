@@ -22,7 +22,15 @@ async function fresh(b, { seed = SEED, hash = '1', offline = false } = {}) {
 const st = (p) => p.evaluate(() => JSON.parse(localStorage.getItem('cedarcrest.v1')));
 const click = async (p, sel) => { await p.click(sel); await p.waitForTimeout(200); };
 const tapMap = (p, fn) => p.evaluate(`(() => { const a = window.__app; const h = a.course.hole(a.ref); const t = h.tees[Math.floor((h.tees.length-1)/2)].center; const pin = h.pin; const lerp=(u,v,k)=>[u[0]+(v[0]-u[0])*k,u[1]+(v[1]-u[1])*k]; a.scene.onTap(${fn}); })()`);
-async function mark(p, where, club) { await click(p, '[data-act=simnow]'); await tapMap(p, where); await p.waitForTimeout(200); await click(p, '[data-act=mark]'); await click(p, `[data-club="${club}"]`); }
+// Save a quick-scored hole, then go on with "Next hole" (unless the scorecard opened).
+async function saveHole(p) {
+  if (!(await p.locator('[data-act=savehole]').count())) throw new Error('no Save hole button: ' + (await p.evaluate(() => document.querySelector('#top').innerText + ' / ' + document.querySelector('#panel').innerText.slice(0, 200))));
+  await click(p, '[data-act=savehole]');
+  const next = p.locator('#panel [data-act=next]');
+  if (await p.evaluate(() => document.querySelector('#modal').hidden) && await next.count()) await click(p, '#panel [data-act=next]');
+}
+// Mark a shot: press Mark shot, tap where the ball is, pick the club.
+async function mark(p, where, club) { await click(p, '[data-act=mark]'); await tapMap(p, where); await p.waitForTimeout(200); await click(p, `[data-club="${club}"]`); }
 
 (async () => {
   const b = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -30,7 +38,7 @@ async function mark(p, where, club) { await click(p, '[data-act=simnow]'); await
   // 1. Start on 10, play the back nine with quick scoring, end the round.
   { const p = await fresh(b, { hash: '10' });
     await click(p, '[data-tab=play]'); await click(p, '[data-act=trackshots][data-v="0"]'); await click(p, '[data-act=startround]');
-    for (let i = 0; i < 9; i++) { await click(p, '[data-act=savehole]'); await p.waitForTimeout(400); }
+    for (let i = 0; i < 9; i++) { await saveHole(p); await p.waitForTimeout(400); }
     await p.waitForTimeout(500);
     await click(p, '[data-act=closemodal]').catch(() => {});
     await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {}); await click(p, '[data-act=closemodal]').catch(() => {});
@@ -56,15 +64,16 @@ async function mark(p, where, club) { await click(p, '[data-act=simnow]'); await
   { const p = await fresh(b);
     await click(p, '[data-tab=play]'); await click(p, '[data-act=trackshots][data-v="1"]'); await click(p, '[data-act=startround]');
     await mark(p, 't', 'Driver'); await mark(p, 'lerp(t,pin,0.6)', '7 Iron');
-    await click(p, '[data-act=finish]'); await p.check('#holedoff'); await click(p, '[data-fp=na]');
+    await click(p, '[data-act=holedout]');
     let s = await st(p); let h = s.rounds[0].holes[1];
     const v1 = await p.evaluate(() => { const a = window.__app; return a.state.rounds[0] && window.__score1; });
     check('Hole out from the fairway counts 2 strokes, 0 putts', h.done && h.putts === 0 && h.shots.length === 2);
     await click(p, '[data-act=next]');
-    await mark(p, 't', 'Driver'); await click(p, '[data-act=pen][data-i="0"]'); // lost: stroke and distance
+    await mark(p, 't', 'Driver'); await click(p, '[data-act=more]'); await click(p, '[data-act=pen][data-i="0"]'); await click(p, '[data-act=more]'); // lost: stroke and distance
     await mark(p, 't', 'Driver'); await mark(p, 'lerp(t,pin,0.7)', '8 Iron');
     await click(p, '[data-act=ongreen]'); await tapMap(p, 'lerp(pin,t,0.02)'); await p.waitForTimeout(200);
-    await click(p, '[data-act=finish]'); await click(p, '[data-fp=na]');
+    for (let k = 0; k < 4 && (await st(p)).rounds[0].holes[2].putts < 2; k++) await click(p, '[data-act=putt][data-d="1"]');
+    await click(p, '[data-act=finish]');
     s = await st(p); h = s.rounds[0].holes[2];
     const score = h.shots.length + h.shots.reduce((a, x) => a + x.penalty, 0) + h.putts;
     check('Lost ball off the tee (re-tee + penalty) scores correctly', score === 6, `score ${score}`);
@@ -73,11 +82,11 @@ async function mark(p, where, club) { await click(p, '[data-act=simnow]'); await
   // 4. Skipped holes, then two rounds the same day.
   { const p = await fresh(b);
     await click(p, '[data-tab=play]'); await click(p, '[data-act=trackshots][data-v="0"]'); await click(p, '[data-act=startround]');
-    await click(p, '[data-act=savehole]'); await p.waitForTimeout(300);
+    await saveHole(p); await p.waitForTimeout(300);
     for (let i = 0; i < 3; i++) await click(p, '#top [data-act=next]');
-    await click(p, '[data-act=savehole]'); await p.waitForTimeout(300);
+    await saveHole(p); await p.waitForTimeout(300);
     await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {}); await click(p, '[data-act=closemodal]').catch(() => {});
-    await click(p, '[data-tab=play]'); await click(p, '[data-act=startround]'); await click(p, '[data-act=savehole]'); await p.waitForTimeout(300);
+    await click(p, '[data-tab=play]'); await click(p, '[data-act=startround]'); await saveHole(p); await p.waitForTimeout(300);
     await click(p, '[data-act=endround]'); await click(p, '[data-ans=yes]'); await click(p, '[data-ans=no]').catch(() => {}); await click(p, '[data-act=closemodal]').catch(() => {});
     const s = await st(p);
     check('Skipped holes are left out, not scored', Object.keys(s.rounds[0].holes).join() === '1,5', Object.keys(s.rounds[0].holes).join());
@@ -95,7 +104,7 @@ async function mark(p, where, club) { await click(p, '[data-act=simnow]'); await
   { const p = await fresh(b, { offline: true });
     await click(p, '[data-tab=play]'); await click(p, '[data-act=trackshots][data-v="0"]'); await click(p, '[data-act=startround]');
     await p.waitForTimeout(1500);
-    await click(p, '[data-act=savehole]'); await p.waitForTimeout(300);
+    await saveHole(p); await p.waitForTimeout(300);
     const s = await st(p);
     check('No signal: round starts and scores save', s.rounds[0].holes[1].done);
     check('  no errors', !p.errors.length, p.errors.join('; '));
@@ -115,7 +124,7 @@ async function mark(p, where, club) { await click(p, '[data-act=simnow]'); await
     await click(p, '[data-tab=play]'); await click(p, '[data-act=trackshots][data-v="0"]'); await click(p, '[data-act=startround]');
     for (let i = 0; i < 18; i++) {
       if (i === 9) for (let k = 0; k < 6; k++) await click(p, '[data-act=qs][data-d="1"]'); // 11 on hole 10
-      await click(p, '[data-act=savehole]'); await p.waitForTimeout(250);
+      await saveHole(p); await p.waitForTimeout(250);
     }
     await p.waitForTimeout(500);
     const txt = await p.evaluate(() => document.querySelector('#modal').innerText);

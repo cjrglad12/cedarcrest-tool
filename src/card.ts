@@ -6,7 +6,7 @@ import type { TeeSet } from './store';
  * Sherrill Park yardages are the pro-shop card. Ratings are the published men's tees
  * where a men's number is printed. Sherrill 2 forward uses the published forward rating.
  */
-export type CourseId = 'cedar' | 'sherrill1' | 'sherrill2';
+export type CourseId = 'cedar' | 'sherrill1' | 'sherrill2' | 'waterchase';
 
 export interface Plate {
   name: string;
@@ -130,6 +130,38 @@ export const COURSES: CourseCard[] = [
       [3, 15, 187, 157, 129, 112],
       [4, 16, 323, 301, 287, 253],
       [4, 5, 400, 362, 348, 288],
+    ]),
+  },
+  {
+    id: 'waterchase',
+    name: 'Waterchase',
+    path: 'data/waterchase/',
+    source: 'Waterchase card from the Golfify listing (not checked against a printed card). Black 74.7/135, Gold 73.1/132, Blue 71.1/129, White 68.2/123 (GolfLink says 68.7/125). Green and Red tees are not offered here.',
+    meta: {
+      black: { name: 'Black', rating: 74.7, slope: 135 },
+      gold: { name: 'Gold', rating: 73.1, slope: 132 },
+      silver: { name: 'Blue', rating: 71.1, slope: 129 },
+      ruby: { name: 'White', rating: 68.2, slope: 123 },
+    },
+    rows: rows([
+      [4, 11, 439, 415, 379, 344],
+      [3, 15, 227, 198, 172, 134],
+      [5, 7, 549, 537, 521, 460],
+      [4, 13, 374, 353, 339, 304],
+      [4, 1, 433, 424, 398, 367],
+      [5, 3, 523, 514, 512, 425],
+      [3, 17, 179, 174, 155, 132],
+      [4, 5, 417, 404, 351, 328],
+      [4, 9, 430, 410, 396, 386],
+      [5, 4, 630, 610, 574, 534],
+      [4, 10, 375, 346, 271, 269],
+      [3, 16, 140, 138, 125, 118],
+      [5, 6, 604, 588, 568, 544],
+      [3, 14, 201, 197, 177, 175],
+      [4, 12, 426, 408, 374, 346],
+      [3, 18, 168, 154, 132, 123],
+      [4, 2, 479, 460, 421, 393],
+      [5, 8, 565, 552, 543, 486],
     ]),
   },
 ];
