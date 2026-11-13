@@ -52,8 +52,8 @@ export interface Option {
 }
 
 const LIE_DISTANCE: Record<Lie, number> = { tee: 1, fairway: 1, rough: 0.92, sand: 0.8, recovery: 0.55, green: 1, water: 1, ob: 1 };
-const WOODS = new Set(['Driver', '3 Wood', '5 Wood', 'Hybrid']);
-const WEDGES = new Set(['PW', 'GW', 'SW', 'LW', '9 Iron']);
+const WOODS = new Set(['Driver', '3 Wood', '5 Wood', '7 Wood', '9 Wood', 'Hybrid']);
+const WEDGES = new Set(['PW', 'GW', '54°', 'SW', 'LW', '9 Iron']);
 
 // Deterministic random numbers so the same situation gives the same advice.
 function rng(seed: number) {

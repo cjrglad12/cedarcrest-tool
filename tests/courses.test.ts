@@ -81,3 +81,16 @@ describe('tees are remembered per course', () => {
     expect(migrate({ settings: { courseId: 'nowhere' } } as never).settings.courseId).toBe('cedar');
   });
 });
+
+describe('bag update', () => {
+  it('replaces an old saved bag once with the Nov 12 numbers, then keeps your edits', () => {
+    const old = migrate({ settings: { courseId: 'cedar' }, bag: [{ name: 'Driver', yds: 230, sdYds: 18, sdDeg: 6.5, on: true }] } as never);
+    const drv = old.bag.find((c) => c.name === 'Driver')!;
+    expect([drv.carry, drv.yds]).toEqual([225, 272]);
+    expect(old.bag.find((c) => c.name === '7 Wood')?.yds).toBe(268);
+    expect(old.bag.find((c) => c.name === '54°')?.yds).toBe(100);
+    drv.yds = 280;
+    const again = migrate(JSON.parse(JSON.stringify(old)));
+    expect(again.bag.find((c) => c.name === 'Driver')!.yds).toBe(280);
+  });
+});

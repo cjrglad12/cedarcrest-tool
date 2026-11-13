@@ -1246,10 +1246,11 @@ function menu() {
     <p class="tiny muted">${cardSource()}</p>
     ${TEE_SETS.map((t) => `<div class="row spread" style="margin-top:6px"><span>${teeName(t)}</span><span class="row"><input type="number" step="0.1" placeholder="${cardHole(1, t).rating}" style="width:76px" data-rating="${t}" data-k="rating" value="${S().settings.ratings[t]?.rating ?? ''}"/><input type="number" step="1" placeholder="${cardHole(1, t).slope}" style="width:66px" data-rating="${t}" data-k="slope" value="${S().settings.ratings[t]?.slope ?? ''}"/></span></div>`).join('')}
     <h3>Bag</h3>
-    <table><tr><th>On</th><th style="text-align:left">Club</th><th>Yds</th><th>± yds</th><th>± °</th></tr>
-    ${S().bag.map((c, i) => `<tr><td><input type="checkbox" data-bag="${i}" data-k="on" ${c.on ? 'checked' : ''}/></td><td style="text-align:left">${c.name}</td><td><input type="number" data-bag="${i}" data-k="yds" value="${c.yds}"/></td><td><input type="number" style="width:52px" data-bag="${i}" data-k="sdYds" value="${c.sdYds}"/></td><td><input type="number" style="width:52px" step="0.5" data-bag="${i}" data-k="sdDeg" value="${c.sdDeg}"/></td></tr>`).join('')}</table>
+    <table><tr><th>On</th><th style="text-align:left">Club</th><th>Carry</th><th>Total</th><th>± yds</th><th>± °</th></tr>
+    ${S().bag.map((c, i) => `<tr><td><input type="checkbox" data-bag="${i}" data-k="on" ${c.on ? 'checked' : ''}/></td><td style="text-align:left">${c.name}</td><td><input type="number" style="width:56px" data-bag="${i}" data-k="carry" value="${c.carry ?? ''}"/></td><td><input type="number" style="width:56px" data-bag="${i}" data-k="yds" value="${c.yds}"/></td><td><input type="number" style="width:52px" data-bag="${i}" data-k="sdYds" value="${c.sdYds}"/></td><td><input type="number" style="width:52px" step="0.5" data-bag="${i}" data-k="sdDeg" value="${c.sdDeg}"/></td></tr>`).join('')}</table>
     <p class="tiny muted">"± yds" and "± °" are the typical spread for a 15 handicap; the advice tightens or widens them for your handicap. Once a club has 5+ recorded shots, your measured numbers are used instead.</p>
-    <button class="btn sm" data-act="resetbag">Reset bag to defaults</button>
+    <p class="tiny muted">Advice uses Total (carry and roll). Untick clubs that aren't in the bag today (14 max).</p>
+    <button class="btn sm" data-act="resetbag">Reset to my Nov 12 Toptracer numbers</button>
     <h3>Your data</h3>
     <p class="small muted">Saved on this phone only. Last backup: ${S().settings.lastBackup ? new Date(S().settings.lastBackup!).toLocaleDateString() : 'never'}.</p>
     <div class="row wrap"><button class="btn" data-act="export">Export backup</button><button class="btn" data-act="import">Import backup</button><button class="btn danger" data-act="wipe">Erase everything</button></div>

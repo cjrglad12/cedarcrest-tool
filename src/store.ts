@@ -5,24 +5,38 @@ import { CALM, type Conditions } from './conditions';
 export interface Club {
   name: string;
   yds: number; // typical total distance
+  carry?: number; // typical carry, when known
   sdYds: number; // distance spread (1 standard deviation)
   sdDeg: number; // left/right spread in degrees
   on: boolean;
 }
 
+/**
+ * Your bag, from the Toptracer sessions (club-distances one-pager, updated Nov 12, 2026).
+ * `yds` is total (carry and roll, which the advice uses); `carry` is the mat carry.
+ * Clubs not hit on Nov 12 keep their Nov 7 numbers. Mat numbers, not grass.
+ */
+export const BAG_VERSION = '2026-11-12';
+const club = (name: string, carry: number, yds: number, sdDeg: number): Club =>
+  ({ name, carry, yds, sdYds: Math.max(7, Math.round(yds * (name === 'Driver' ? 0.075 : 0.068))), sdDeg, on: true });
 export const DEFAULT_BAG: Club[] = [
-  { name: 'Driver', yds: 230, sdYds: 18, sdDeg: 6.5, on: true },
-  { name: '3 Wood', yds: 210, sdYds: 16, sdDeg: 6, on: true },
-  { name: 'Hybrid', yds: 190, sdYds: 14, sdDeg: 5.5, on: true },
-  { name: '5 Iron', yds: 172, sdYds: 12, sdDeg: 5.5, on: false },
-  { name: '6 Iron', yds: 162, sdYds: 11, sdDeg: 5, on: true },
-  { name: '7 Iron', yds: 152, sdYds: 10, sdDeg: 5, on: true },
-  { name: '8 Iron', yds: 141, sdYds: 9, sdDeg: 4.5, on: true },
-  { name: '9 Iron', yds: 130, sdYds: 8, sdDeg: 4.5, on: true },
-  { name: 'PW', yds: 118, sdYds: 7, sdDeg: 4.5, on: true },
-  { name: 'GW', yds: 102, sdYds: 7, sdDeg: 4.5, on: true },
-  { name: 'SW', yds: 85, sdYds: 7, sdDeg: 5, on: true },
-  { name: 'LW', yds: 65, sdYds: 7, sdDeg: 5.5, on: false },
+  club('Driver', 225, 272, 6.5),
+  club('3 Wood', 192, 229, 6),
+  club('5 Wood', 219, 243, 6),
+  club('7 Wood', 237, 268, 5.5),
+  club('9 Wood', 204, 226, 5.5),
+  club('Hybrid', 207, 223, 5.5),
+  club('4 Iron', 218, 237, 5.5),
+  club('5 Iron', 194, 209, 5.5),
+  club('6 Iron', 180, 189, 5),
+  club('7 Iron', 154, 167, 5),
+  club('8 Iron', 159, 164, 4.5),
+  club('9 Iron', 156, 160, 4.5),
+  club('PW', 125, 128, 4.5),
+  club('GW', 126, 127, 4.5),
+  club('54°', 100, 100, 5),
+  club('SW', 88, 89, 5),
+  club('LW', 76, 77, 5.5),
 ];
 export const PUTTER = 'Putter';
 
@@ -98,6 +112,8 @@ export interface Settings {
   bigText: boolean;
   /** cedar, sherrill1, or sherrill2. */
   courseId: CourseKey;
+  /** Which bag update has been applied (see BAG_VERSION). */
+  bagVersion?: string;
   /** Show the big hole card instead of the map. */
   caddie?: boolean;
   /** Tees picked on each course (teeSet is the one for the course in use). */
@@ -122,7 +138,7 @@ const KEY = 'cedarcrest.v1';
 export function freshState(): State {
   return {
     version: 1,
-    settings: { handicap: 15, teeSet: 'gold', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: false, measureHint: true, ratings: {}, lastBackup: null, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false, grainToward: null, stimpToday: null, sgBaseline: 'me', installDismissed: false, simple: true, bigText: false, courseId: 'cedar' },
+    settings: { handicap: 15, teeSet: 'gold', exaggerate: 1.5, simulateGps: false, useMyNumbers: true, showWind: false, onboarded: false, trackShots: false, measureHint: true, ratings: {}, lastBackup: null, bagVersion: BAG_VERSION, leftHanded: false, stimp: 10, wet: 'auto', manualWeather: false, grainToward: null, stimpToday: null, sgBaseline: 'me', installDismissed: false, simple: true, bigText: false, courseId: 'cedar' },
     bag: DEFAULT_BAG.map((c) => ({ ...c })),
     plans: {},
     pins: {},
@@ -164,13 +180,18 @@ export function migrate(s: Partial<State>): State {
   for (const [k, v] of Object.entries(s.settings?.teeByCourse ?? {})) teeByCourse[k] = normalizeTee(v);
   teeByCourse[courseId] = teeSet;
   const settings = { ...base.settings, ...(s.settings ?? {}), teeSet, courseId, teeByCourse };
+  // A newer bag (new distances) replaces the saved one once; edits after that are kept.
+  const bagVersion = (s.settings as Partial<Settings> | undefined)?.bagVersion;
+  settings.bagVersion = bagVersion;
   const tag = (bag: Record<string, unknown> | undefined) => {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(bag ?? {})) out[k.includes(':') ? k : `cedar:${k}`] = v;
     return out;
   };
   const rounds = (s.rounds ?? base.rounds).map((r) => ({ ...r, teeSet: normalizeTee(r.teeSet), courseId: courseKey(r.courseId) }));
-  return { ...base, ...s, settings, rounds, plans: tag(s.plans as unknown as Record<string, unknown>) as State['plans'], pins: tag(s.pins as unknown as Record<string, unknown>) as State['pins'], bag: s.bag?.length ? s.bag : base.bag };
+  const out = { ...base, ...s, settings, rounds, plans: tag(s.plans as unknown as Record<string, unknown>) as State['plans'], pins: tag(s.pins as unknown as Record<string, unknown>) as State['pins'], bag: s.bag?.length && settings.bagVersion === BAG_VERSION ? s.bag : base.bag.map((c) => ({ ...c })) };
+  out.settings.bagVersion = BAG_VERSION;
+  return out;
 }
 
 /** Called when the phone refuses to save (for example, storage is full). */
