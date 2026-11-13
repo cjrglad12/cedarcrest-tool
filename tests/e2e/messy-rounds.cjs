@@ -22,12 +22,10 @@ async function fresh(b, { seed = SEED, hash = '1', offline = false } = {}) {
 const st = (p) => p.evaluate(() => JSON.parse(localStorage.getItem('cedarcrest.v1')));
 const click = async (p, sel) => { await p.click(sel); await p.waitForTimeout(200); };
 const tapMap = (p, fn) => p.evaluate(`(() => { const a = window.__app; const h = a.course.hole(a.ref); const t = h.tees[Math.floor((h.tees.length-1)/2)].center; const pin = h.pin; const lerp=(u,v,k)=>[u[0]+(v[0]-u[0])*k,u[1]+(v[1]-u[1])*k]; a.scene.onTap(${fn}); })()`);
-// Save a quick-scored hole, then go on with "Next hole" (unless the scorecard opened).
+// Save a quick-scored hole (this also moves on to the next hole).
 async function saveHole(p) {
   if (!(await p.locator('[data-act=savehole]').count())) throw new Error('no Save hole button: ' + (await p.evaluate(() => document.querySelector('#top').innerText + ' / ' + document.querySelector('#panel').innerText.slice(0, 200))));
   await click(p, '[data-act=savehole]');
-  const next = p.locator('#panel [data-act=next]');
-  if (await p.evaluate(() => document.querySelector('#modal').hidden) && await next.count()) await click(p, '#panel [data-act=next]');
 }
 // Mark a shot: press Mark shot, tap where the ball is, pick the club.
 async function mark(p, where, club) { await click(p, '[data-act=mark]'); await tapMap(p, where); await p.waitForTimeout(200); await click(p, `[data-club="${club}"]`); }
@@ -68,7 +66,7 @@ async function mark(p, where, club) { await click(p, '[data-act=mark]'); await t
     let s = await st(p); let h = s.rounds[0].holes[1];
     const v1 = await p.evaluate(() => { const a = window.__app; return a.state.rounds[0] && window.__score1; });
     check('Hole out from the fairway counts 2 strokes, 0 putts', h.done && h.putts === 0 && h.shots.length === 2);
-    await click(p, '[data-act=next]');
+    check('  saving moves on to hole 2 once', (await p.evaluate(() => window.__app.ref)) === 2);
     await mark(p, 't', 'Driver'); await click(p, '[data-act=more]'); await click(p, '[data-act=pen][data-i="0"]'); await click(p, '[data-act=more]'); // lost: stroke and distance
     await mark(p, 't', 'Driver'); await mark(p, 'lerp(t,pin,0.7)', '8 Iron');
     await click(p, '[data-act=ongreen]'); await tapMap(p, 'lerp(pin,t,0.02)'); await p.waitForTimeout(200);
@@ -132,6 +130,39 @@ async function mark(p, where, club) { await click(p, '[data-act=mark]'); await t
     check('18 holes: scorecard shows adjusted gross and differential', !!ags && /Differential/.test(txt), ags ? `adjusted gross ${ags[1]} (gross ${71 + 6})` : txt.slice(0, 120));
     check('  blow-up hole capped at net double bogey', ags && +ags[1] === 71 + 6 - (11 - 8), '');
     await p.screenshot({ path: `${S}/m8-scorecard.png` });
+    await p.context().close(); }
+
+  // 9. Whole round from the hole card (no map): swipe, score, save, end.
+  { const p = await fresh(b, { seed: JSON.stringify({ version: 1, settings: { onboarded: true, measureHint: false } }) });
+    await click(p, '[data-act=caddieon]');
+    const shown = await p.evaluate(() => !document.querySelector('#caddie').hidden && getComputedStyle(document.querySelector('#view')).display === 'none');
+    const txt = await p.evaluate(() => document.querySelector('#caddie').innerText);
+    check('Card: replaces the map and shows the number, club and wind', shown && /Driver|Iron|Wood|Hybrid/.test(txt) && /WIND/i.test(txt), txt.replace(/\n+/g, ' / ').slice(0, 140));
+    const box = await p.locator('#caddie .cscroll').boundingBox();
+    await p.mouse.move(box.x + box.width * 0.8, box.y + 200); await p.mouse.down(); await p.mouse.move(box.x + box.width * 0.2, box.y + 205, { steps: 5 }); await p.mouse.up();
+    await p.waitForTimeout(300);
+    check('  swipe left goes to hole 2', (await p.evaluate(() => window.__app.ref)) === 2);
+    await click(p, '[data-act=caddiestart]'); await p.waitForTimeout(300);
+    for (let i = 0; i < 3; i++) await click(p, '#caddie [data-act=savehole]');
+    let s = await st(p);
+    const r = s.rounds.find((x) => x.id === s.activeRoundId);
+    check('  start and save holes from the card', r && Object.keys(r.holes).filter((k) => r.holes[k].done).join() === '2,3,4' && (await p.evaluate(() => window.__app.ref)) === 5, r && Object.keys(r.holes).join());
+    await click(p, '[data-act=caddieoff]');
+    check('  Map brings the map back', await p.evaluate(() => getComputedStyle(document.querySelector('#view')).display !== 'none'));
+    await click(p, '[data-act=caddieon]');
+    await p.reload(); await p.waitForFunction(() => window.__app && window.__app.scene); await p.waitForTimeout(800);
+    check('  card mode is remembered after a reload', await p.evaluate(() => !document.querySelector('#caddie').hidden));
+    check('  no errors', !p.errors.length, p.errors.join('; '));
+    await p.context().close(); }
+
+  // 10. Sherrill 2: tees that the map was missing come from the card.
+  { const p = await fresh(b, { seed: JSON.stringify({ version: 1, settings: { onboarded: true, measureHint: false, courseId: 'sherrill2', teeSet: 'gold' } }), hash: '5' });
+    const t = await p.evaluate(() => { const a = window.__app; const h = a.course.hole(5); return h.tees.map((x) => `${x.lengthYds}${x.estimated ? '*' : ''}`).join(','); });
+    const big = await p.evaluate(() => { document.querySelector('[data-tab=plan]').click(); return null; });
+    await p.waitForTimeout(800);
+    const front = await p.evaluate(() => document.querySelector('.decision')?.innerText || '');
+    check('Sherrill 2 hole 5 has a tee at the card length', /54\d\*?/.test(t), t);
+    check('  numbers read from the Champ tee (543)', /543 yards|^54\d/m.test(front), front.replace(/\n+/g, ' / ').slice(0, 80));
     await p.context().close(); }
 
   console.log(`\n${pass} passed, ${fail} failed`);

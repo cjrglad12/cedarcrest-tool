@@ -138,7 +138,7 @@ function renderTop() {
     return;
   }
   const views = (['top', 'tee', 'green', 'course'] as const).map((v) => `<button data-view="${v}" class="${cur === v ? 'on' : ''}">${{ top: 'Overhead', tee: 'Tee', green: 'Green', course: 'Course' }[v]}</button>`).join('');
-  $('#viewbtns').innerHTML = views +
+  $('#viewbtns').innerHTML = `<button class="cardbtn" data-act="caddieon">Card</button>` + views +
     `<button class="compass" data-act="northup" aria-label="Compass, north up"><i id="needle">▲</i><small>N</small></button>` +
     (app.scene?.userMoved ? `<button class="reset" data-act="resetview">Reset</button>` : '') +
     (cur === 'green' ? '<button class="reset" data-act="puttstart">Read putt</button>' : '') +
@@ -444,7 +444,7 @@ function renderPlan(): string {
     <div class="elev">${elevText(t.center, pinXY, 'the tee')}</div>
     ${tipsHtml(tipsFor({ cond: c, wetSetting: S().settings.wet, where: 'plan', shotYds: toYds(dist(t.center, pinXY)) > 260 ? 230 : toYds(dist(t.center, pinXY)), shotBearing: bearing(t.center, pinXY) }))}
 
-    ${h.par === 3 ? missHtml(t.center) : teeSideHtml() + (steps.length >= 2 ? missHtml(steps[steps.length - 2].target, 'On your approach: ') : '')}
+    ${h.par === 3 ? missHtml(t.center) : steps.length >= 2 ? missHtml(steps[steps.length - 2].target, 'On your approach: ') : ''}
 
     <h3>Your plan</h3>
     ${steps.length ? `<ul class="list">${stepRows}</ul>` : '<p class="muted small">Working out a plan for this hole.</p>'}
@@ -836,7 +836,7 @@ function scorecard(roundId?: string) {
 function roundFooter() {
   const r = round()!;
   const n = Object.values(r.holes).filter((h) => h.done).length;
-  return `<div style="margin-top:12px"><div class="tiny muted">${n ? `${n} hole${n === 1 ? '' : 's'} saved` : 'Nothing saved yet'}</div><div class="row" style="margin-top:6px"><button class="btn grow" data-act="endround">Save and stop</button><button class="btn grow danger" data-act="dropround">Don't save</button></div></div>`;
+  return `<div class="row spread" style="margin-top:14px"><span class="tiny muted">${n ? `${n} hole${n === 1 ? '' : 's'} saved` : 'Nothing saved yet'}</span><button class="btn sm" data-act="endround">End round</button></div>`;
 }
 
 // ---------------- Stats tab ----------------
@@ -947,6 +947,93 @@ async function installApp() {
 
 // ---------------- panel ----------------
 let lastScreen = '';
+// ---------------- Caddie card ----------------
+/** Card mode: one big, map-free card per hole. Everything you need standing over the ball. */
+const caddieOn = () => !!S().settings.caddie && !app.putt;
+
+function caddieFrom(): XY {
+  const rec = holeRec();
+  const me = myPos();
+  if (me && (usingSim() || app.scene.holeNear(me, 80) === app.ref)) return me;
+  if (rec?.shots.length) return rec.shots[rec.shots.length - 1].start;
+  return tee().center;
+}
+
+function hazardWords(from: XY, pinXY: XY): string[] {
+  return app.course.hazards(hole(), from, pinXY).slice(0, 3).map((z) => {
+    const what = z.kind === 'water' ? 'Water' : 'Bunker';
+    const where = z.side === 'center' ? 'across the line' : `on the ${z.side}`;
+    const reach = y0(z.reach), carry = y0(z.carry);
+    return z.side === 'center'
+      ? `${what} ${where}: <b>${reach}</b> to reach, <b>${carry}</b> to carry`
+      : carry - reach < 6 ? `${what} ${where} at <b>${reach}</b>` : `${what} ${where}, <b>${reach}</b> to <b>${carry}</b>`;
+  });
+}
+
+function renderCaddie() {
+  const el = document.getElementById('caddie');
+  if (!el) return;
+  if (!caddieOn()) { el.hidden = true; return; }
+  el.hidden = false;
+  const h = hole(), r = round(), rec = holeRec();
+  const pinXY = pin();
+  const from = caddieFrom();
+  const n = shotNumbers(from, pinXY);
+  const onTee = dist(from, tee().center) < 25 && !(rec?.shots.length);
+  const plate = cardHole(h.ref, teeSet());
+  const lines: string[] = [];
+  const club = n.plays >= 30 ? clubSentence(n.plays, app.bag) : 'On the green.';
+  if (onTee && h.par >= 4) lines.push(teeSideHtml());
+  else if (!onTee) { const tr = treeLine(from); if (tr) lines.push(`<div class="miss">${tr}</div>`); }
+  const steps = plan().steps;
+  const planLine = onTee && steps.length >= 2
+    ? `<div class="cline"><span>Your plan</span>${steps.map((st, i) => `${i ? ' → ' : ''}<b>${esc(st.club)}</b>`).join('')}, leaving ${y0(dist(steps[steps.length - 2].target, pinXY))} in</div>`
+    : onTee && plate.par >= 5 ? `<div class="cline"><span>Then</span>${par5Sentence(n.plays, app.bag)}</div>` : '';
+  const approach = h.par === 3 || !onTee ? from : steps.length >= 2 ? steps[steps.length - 2].target : null;
+  const miss = approach ? missAdvice(approach) : null;
+  const hz = hazardWords(from, pinXY);
+  const notes = plan().notes.trim();
+  const card = `
+    <div class="cnum"><b>${n.plays}</b><span>${n.plays !== n.raw ? `plays<small>${n.raw} yds</small>` : `yards`}</span></div>
+    ${n.plays !== n.raw && n.why ? `<div class="cwhy">${n.why}</div>` : ''}
+    <div class="cends"><span>Front <b>${n.front}</b></span><span>Back <b>${n.back}</b></span></div>
+    <div class="cclub">${club}</div>
+    ${lines.join('')}
+    <div class="cline"><span>Wind</span>${windPlain(from, pinXY)}</div>
+    ${hz.length ? `<div class="cline"><span>Trouble</span>${hz.join('<br>')}</div>` : ''}
+    ${planLine}
+    ${miss ? `<div class="cline"><span>Green</span>Miss <b>${miss.best}</b>. Avoid <b>${miss.worst}</b>.</div>` : ''}
+    ${notes ? `<div class="cline"><span>Notes</span>${esc(notes)}</div>` : ''}`;
+  let bar = '';
+  if (r && rec && !rec.done) {
+    const strokes = rec.strokes ?? plate.par;
+    bar = rec.quick
+      ? `<div class="cbar">
+          <div><div class="small">Score</div><div class="stepper big"><button data-act="qs" data-d="-1" aria-label="Remove a stroke">−</button><b>${strokes}</b><button data-act="qs" data-d="1" aria-label="Add a stroke">+</button></div></div>
+          <div><div class="small">Putts</div><div class="stepper big"><button data-act="putt" data-d="-1" aria-label="Remove a putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="Add a putt">+</button></div></div>
+        </div>
+        <div class="cbar2"><button class="btn primary wide" data-act="savehole">${saveLabel()}</button></div>`
+      : `<div class="cbar">
+          <div><div class="small">Putts</div><div class="stepper big"><button data-act="putt" data-d="-1" aria-label="Remove a putt">−</button><b>${rec.putts}</b><button data-act="putt" data-d="1" aria-label="Add a putt">+</button></div></div>
+          <button class="btn" data-act="mark">Mark shot ${rec.shots.length + 1}</button>
+        </div>
+        <div class="cbar2"><button class="btn primary wide" data-act="finish" ${rec.shots.length ? '' : 'disabled'}>${saveLabel()}</button></div>`;
+  } else if (r && rec?.done) {
+    const v = analyzeHole(app.course, rec, S().settings.handicap);
+    bar = `<div class="cbar"><div class="grow"><b>Hole ${h.ref}: ${v.score}</b><div class="tiny">${v.putts} putt${v.putts === 1 ? '' : 's'}</div></div><button class="btn" data-act="reopen">Edit</button><button class="btn primary" data-act="next">Next hole</button></div>`;
+  } else if (!r) {
+    bar = `<div class="cbar"><button class="btn primary grow" data-act="caddiestart">Start a round on hole ${h.ref}</button></div>`;
+  }
+  el.innerHTML = `<div class="cscroll"><div class="ctop"><span>${plate.name} tees${onTee ? '' : ' · from your ball'}</span><button class="btn sm" data-act="caddieoff">Map</button></div>${card}</div>${bar}`;
+}
+
+/** The save button says where it goes next. */
+function saveLabel() {
+  const r = round();
+  const left = r ? 18 - Object.values(r.holes).filter((x) => x.done).length : 18;
+  return app.ref === 18 || left <= 1 ? 'Save and see the scorecard' : `Save, then hole ${app.ref + 1}`;
+}
+
 function renderPanel() {
   const panel = $('#panel');
   // Keep the scroll position while working on one screen; start at the top of a new one.
@@ -956,6 +1043,8 @@ function renderPanel() {
   lastScreen = screen;
   panel.innerHTML = app.putt ? renderPutt() : (app.tab === 'plan' ? renderPlan() : app.tab === 'play' ? renderPlay() : renderStats());
   panel.scrollTop = scroll;
+  document.getElementById('app')!.classList.toggle('caddie', caddieOn());
+  renderCaddie();
 }
 
 function refresh(opts: { camera?: boolean } = {}) {
@@ -1097,6 +1186,23 @@ function modal(html: string) {
 }
 function closeModal() { $('#modal').hidden = true; $('#modal').innerHTML = ''; }
 
+/** End the round: keep the finished holes, throw the round out, or keep playing. */
+function endRoundAsk(saved: number): Promise<'save' | 'drop' | 'cancel'> {
+  return new Promise((resolve) => {
+    modal(`<h2>End this round?</h2>
+      <p class="small">${saved ? `${saved} hole${saved === 1 ? '' : 's'} saved. Holes you didn't finish are left out.` : 'No holes saved yet.'}</p>
+      <button class="btn primary wide" data-ans="yes" ${saved ? '' : 'disabled'}>Save ${saved || ''} hole${saved === 1 ? '' : 's'} and stop</button>
+      <button class="btn danger wide" style="margin-top:8px" data-ans="drop">Don't save this round</button>
+      <button class="btn wide" style="margin-top:8px" data-ans="no">Keep playing</button>`);
+    $('#modal').onclick = (e) => {
+      const b = (e.target as HTMLElement).closest('[data-ans]') as HTMLElement | null;
+      if (!b || (b as HTMLButtonElement).disabled) return;
+      closeModal();
+      resolve(b.dataset.ans === 'yes' ? 'save' : b.dataset.ans === 'drop' ? 'drop' : 'cancel');
+    };
+  });
+}
+
 /** In-page yes/no question (browser pop-ups don't work everywhere, e.g. inside Claude). */
 function ask(question: string, yes: string, danger = false): Promise<boolean> {
   return new Promise((resolve) => {
@@ -1162,11 +1268,20 @@ function finishHole(off: boolean) {
   rec.done = true;
   saveNow(S());
   refreshBag();
+  advanceAfterSave();
+}
+
+/** After saving a hole: say the score and move on one hole (or show the card after the last). */
+function advanceAfterSave() {
+  const rec = holeRec();
+  if (!rec) return;
   const v = analyzeHole(app.course, rec, S().settings.handicap);
-  toast(`Hole ${app.ref}: ${v.score}`);
-  app.options = null;
-  app.more = false;
-  refresh();
+  const par = parNow();
+  toast(`Hole ${app.ref}: ${v.score} (${v.score - par === 0 ? "par" : sgn(v.score - par, 0)}). Go back with ‹ to change it.`, 2600);
+  app.options = null; app.more = false;
+  const done = Object.values(round()!.holes).filter((x) => x.done).length;
+  if (app.ref === 18 || done >= 18) { refresh(); scorecard(); return; }
+  goHole(app.ref + 1);
 }
 
 // ---------------- actions ----------------
@@ -1280,6 +1395,8 @@ function markShot() {
   const rec = holeRec();
   if (!rec) return;
   if (!me) {
+    // No GPS: the ball has to be tapped on the map, so leave the card for now.
+    if (caddieOn()) { S().settings.caddie = false; save(); renderPanel(); }
     app.markAfter = true;
     app.mode = { kind: 'sim' };
     renderModebar();
@@ -1529,14 +1646,18 @@ function onClick(e: Event) {
       rec.done = true; saveNow(S()); refreshBag();
       const v = analyzeHole(app.course, rec, S().settings.handicap);
       toast(`Hole ${app.ref}: ${v.score}`);
-      // Stay on the hole and show its score; "Next hole" is the one way forward.
-      app.options = null; app.more = false;
-      if (app.ref === 18 || Object.values(round()!.holes).filter((x) => x.done).length >= 18) scorecard();
-      refresh();
+      advanceAfterSave();
     } break;
-    case 'endround':
-      ask('Save the holes you finished and stop?', 'Save and stop').then((ok) => {
-        if (!ok) return;
+    case 'caddieon': S().settings.caddie = true; save(); renderPanel(); break;
+    case 'caddieoff': S().settings.caddie = false; save(); renderPanel(); app.scene.render?.(); break;
+    case 'caddiestart': S().settings.caddie = true; app.tab = 'play'; startRound(); break;
+    case 'endround': {
+      const r0 = round();
+      if (!r0) break;
+      const n = Object.values(r0.holes).filter((h) => h.done).length;
+      endRoundAsk(n).then((choice) => {
+        if (choice === 'drop') { removeRound(r0.id); return; }
+        if (choice !== 'save') return;
         const r = round()!;
         r.finished = true;
         for (const [k, h] of Object.entries(r.holes)) if (!h.done) delete r.holes[+k];
@@ -1549,6 +1670,7 @@ function onClick(e: Event) {
         } else if (S().rounds.includes(r)) recap(r.id);
       });
       break;
+    }
     case 'dropround': {
       const r = round();
       if (!r) break;
@@ -1675,6 +1797,7 @@ async function openCourse() {
   view.innerHTML = '<div id="loading">Loading course…</div>';
   try {
     app.course = await Course.load(new URL(courseInfo().path, baseUrl).href);
+    app.course.fitTeesToCard((ref) => TEE_SETS.map((t) => cardHole(ref, t).yards));
   } catch {
     const msg = document.getElementById('loading');
     if (msg) msg.textContent = 'Could not load the course. Check the connection and reload.';
@@ -1700,6 +1823,18 @@ function syncPressed() {
 
 async function boot() {
   new MutationObserver(syncPressed).observe(document.body, { childList: true, subtree: true });
+  // Swipe the hole card left or right to change holes.
+  {
+    const card = $('#caddie');
+    let sx = 0, sy = 0, on = false;
+    card.addEventListener('pointerdown', (e) => { if ((e.target as HTMLElement).closest('button')) return; sx = e.clientX; sy = e.clientY; on = true; });
+    card.addEventListener('pointerup', (e) => {
+      if (!on) return;
+      on = false;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (Math.abs(dx) > 70 && Math.abs(dy) < 50) goHole(app.ref + (dx < 0 ? 1 : -1));
+    });
+  }
   try {
     await openCourse();
   } catch {

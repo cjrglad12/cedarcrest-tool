@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { Course, CourseData, toYds, teeFor } from '../src/course';
-import { COURSES, setActiveCourse, cardHole } from '../src/card';
+import { COURSES, setActiveCourse, cardHole, TEE_SETS } from '../src/card';
 import { migrate, setTee, switchCourse } from '../src/store';
 
 function load(dir: string) {
@@ -16,6 +16,8 @@ const courses = COURSES.filter((c) => existsSync(new URL(`../public/${c.path}cou
 
 describe.each(courses.map((c) => [c.id, c] as const))('%s', (id, info) => {
   const course = load(info.path);
+  setActiveCourse(id);
+  course.fitTeesToCard((ref) => TEE_SETS.map((t) => cardHole(ref, t).yards));
   beforeEach(() => setActiveCourse(id));
 
   it('has 18 holes whose pars match the card', () => {
@@ -41,10 +43,9 @@ describe.each(courses.map((c) => [c.id, c] as const))('%s', (id, info) => {
     for (const h of course.holes) {
       const card = cardHole(h.ref, 'gold').yards;
       const mapYds = teeFor(h, 'gold', card).lengthYds;
-      if (Math.abs(mapYds - card) > Math.max(25, card * 0.08)) off.push(`${h.ref}: map ${Math.round(mapYds)} card ${card}`);
+      if (Math.abs(mapYds - card) > Math.max(12, card * 0.03)) off.push(`${h.ref}: map ${Math.round(mapYds)} card ${card}`);
     }
-    // Known gaps in the public map data (tee boxes not mapped): Sherrill 2 holes 5, 7 and 13.
-    expect(off.length, off.join('; ')).toBeLessThanOrEqual(3);
+    expect(off, off.join('; ')).toEqual([]);
   });
 });
 

@@ -98,6 +98,8 @@ export interface Settings {
   bigText: boolean;
   /** cedar, sherrill1, or sherrill2. */
   courseId: CourseKey;
+  /** Show the big hole card instead of the map. */
+  caddie?: boolean;
   /** Tees picked on each course (teeSet is the one for the course in use). */
   teeByCourse?: Record<string, TeeSet>;
   /** Tee rating overrides belong to one course. */
