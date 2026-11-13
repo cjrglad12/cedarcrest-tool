@@ -14,7 +14,11 @@ export interface Feature {
   bbox?: [number, number, number, number];
 }
 
-export interface TeeBox { id: string; center: XY; lengthYds: number }
+export interface TeeBox {
+  id: string; center: XY; lengthYds: number;
+  /** No mapped tee box near the card yardage, so this spot is measured back along the hole line from the green. */
+  estimated?: boolean;
+}
 
 export interface Hole {
   ref: number;
@@ -193,6 +197,47 @@ export class Course {
     return new Course(data, new Uint16Array(buf), can ? new Uint8Array(can) : undefined, grn ? new Uint16Array(grn) : undefined);
   }
 
+  /** Yards from a spot to the pin along the hole's line of play (how a card measures). */
+  lineYds(hole: Hole, from: XY): number {
+    return toYds(this.playLine(hole, from, hole.pin).length);
+  }
+
+  /** The spot `yds` back from the pin along the hole line (past the line's start if needed). */
+  pointBack(hole: Hole, yds: number): XY {
+    const pts: XY[] = [hole.pin, ...hole.line.slice(0, -1).reverse()];
+    let left = yds * YD;
+    for (let i = 1; i < pts.length; i++) {
+      const seg = dist(pts[i - 1], pts[i]);
+      if (left <= seg || i === pts.length - 1) {
+        const f = left / (seg || 1);
+        return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
+      }
+      left -= seg;
+    }
+    return pts[pts.length - 1];
+  }
+
+  /**
+   * Make the tee boxes agree with the scorecard. Mapped boxes are re-measured along the
+   * line of play. Where no mapped box is within about 15 yards of a tee set's card
+   * yardage (the public map is missing that box), an estimated tee is added that far
+   * back along the hole line, as long as it lands inside the course.
+   */
+  fitTeesToCard(cardYds: (ref: number) => number[]) {
+    for (const h of this.data.holes) {
+      for (const t of h.tees) if (!t.estimated) t.lengthYds = Math.round(this.lineYds(h, t.center));
+      for (const [i, yds] of cardYds(h.ref).entries()) {
+        if (!yds) continue;
+        const near = h.tees.some((t) => Math.abs(t.lengthYds - yds) <= (t.estimated ? 3 : Math.max(12, yds * 0.03)));
+        if (near) continue;
+        const p = this.pointBack(h, yds);
+        if (!pointInRing(p, this.data.boundary[0]) && !this.data.boundary.some((r) => pointInRing(p, r))) continue;
+        h.tees.push({ id: `card-${h.ref}-${i}`, center: p, lengthYds: Math.round(this.lineYds(h, p)), estimated: true });
+      }
+      h.tees.sort((a, b) => b.lengthYds - a.lengthYds);
+    }
+  }
+
   get holes() { return this.data.holes; }
   hole(ref: number) { return this.data.holes.find((h) => h.ref === ref)!; }
   feature(id: string | null) { return id ? this.byId.get(id) : undefined; }
@@ -367,7 +412,7 @@ export class Course {
     for (const f of this.features) {
       if (f.kind !== 'bunker' && f.kind !== 'water') continue;
       if (f.id === hole.greenId) continue;
-      let reach = Infinity, carry = -Infinity, offSum = 0, n = 0;
+      const pts: { along: number; off: number }[] = [];
       for (const ring of f.rings) {
         for (let i = 0; i < ring.length; i++) {
           // Walk each edge in short steps so big shapes with few corners still clip cleanly.
@@ -377,16 +422,50 @@ export class Course {
             const p: XY = [a[0] + ((b[0] - a[0]) * k) / steps, a[1] + ((b[1] - a[1]) * k) / steps];
             const { along, off } = line.project(p);
             if (Math.abs(off) > wide(along) || along < 5 || along > backOfGreen + 5) continue;
-            reach = Math.min(reach, along); carry = Math.max(carry, along);
-            offSum += off; n++;
+            pts.push({ along, off });
           }
         }
       }
-      if (!n || reach > toPin + 25) continue;
-      const mean = offSum / n;
-      out.push({ id: f.id, kind: f.kind, side: Math.abs(mean) < 8 ? 'center' : mean < 0 ? 'left' : 'right', reach, carry, offset: mean });
+      if (!pts.length) continue;
+      // A long pond or creek can cross the line in one place and run beside it in another:
+      // report each stretch on its own. Where it crosses, the carry is only over the crossing.
+      pts.sort((p, q) => p.along - q.along);
+      const spans: (typeof pts)[] = [];
+      for (const p of pts) {
+        const last = spans[spans.length - 1];
+        if (last && p.along - last[last.length - 1].along < 12) last.push(p); else spans.push([p]);
+      }
+      for (const sp of spans) {
+        const onLine = sp.filter((p) => Math.abs(p.off) < 8);
+        const crosses = onLine.length > 0 || (sp.some((p) => p.off < 0) && sp.some((p) => p.off > 0));
+        if (crosses) {
+          const c = onLine.length ? onLine : sp;
+          const reach = c[0].along, carry = c[c.length - 1].along;
+          if (reach > toPin + 25) continue;
+          out.push({ id: f.id, kind: f.kind, side: 'center', reach, carry, offset: 0 });
+          // Any part before or after the crossing runs along one side.
+          for (const rest of [sp.filter((p) => p.along < reach - 12), sp.filter((p) => p.along > carry + 12)]) {
+            if (!rest.length || rest[0].along > toPin + 25) continue;
+            const mean = rest.reduce((t, p) => t + p.off, 0) / rest.length;
+            out.push({ id: f.id, kind: f.kind, side: mean < 0 ? 'left' : 'right', reach: rest[0].along, carry: rest[rest.length - 1].along, offset: mean });
+          }
+          continue;
+        }
+        const reach = sp[0].along, carry = sp[sp.length - 1].along;
+        if (reach > toPin + 25) continue;
+        const mean = sp.reduce((t, p) => t + p.off, 0) / sp.length;
+        out.push({ id: f.id, kind: f.kind, side: mean < 0 ? 'left' : 'right', reach, carry, offset: mean });
+      }
     }
-    return out.sort((a, b) => a.reach - b.reach);
+    // Pieces of the same bunker or pond on the same side, close together, read as one.
+    out.sort((a, b) => (a.id === b.id ? a.reach - b.reach : a.id < b.id ? -1 : 1));
+    const merged: typeof out = [];
+    for (const z of out) {
+      const m = merged[merged.length - 1];
+      if (m && m.id === z.id && m.side === z.side && z.reach - m.carry < 25) { m.carry = Math.max(m.carry, z.carry); continue; }
+      merged.push({ ...z });
+    }
+    return merged.sort((a, b) => a.reach - b.reach);
   }
 
   /** Point along the hole's center line `m` meters from its start (clamped to the end). */
@@ -465,5 +544,5 @@ export function teeFor(hole: Hole, set: 'black' | 'gold' | 'silver' | 'ruby', ca
   const byPos = t[Math.min(idx, Math.max(0, t.length - 1))]!;
   if (!cardYds || t.length < 2) return byPos;
   const best = t.reduce((a, b) => (Math.abs(b.lengthYds - cardYds) < Math.abs(a.lengthYds - cardYds) ? b : a));
-  return Math.abs(byPos.lengthYds - cardYds) - Math.abs(best.lengthYds - cardYds) > 12 ? best : byPos;
+  return Math.abs(best.lengthYds - cardYds) < Math.abs(byPos.lengthYds - cardYds) ? best : byPos;
 }

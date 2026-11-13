@@ -224,3 +224,31 @@ ol.plain li { margin: 5px 0; }
 button.wide, .btn.wide { width: 100%; }
 .flatnote { position: absolute; left: 8px; bottom: 8px; font-size: 11px; color: #fff; background: #0008; padding: 3px 8px; border-radius: 6px; pointer-events: none; }
 #view { position: relative; }
+
+/* ---------- Caddie card: one big map-free card per hole ---------- */
+#caddie { display: none; }
+#app.caddie #view, #app.caddie #viewbtns, #app.caddie #sheet { display: none !important; }
+#app.caddie #caddie:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--panel); color: var(--ink); grid-column: 1 / -1; grid-row: 2; }
+#caddie .cscroll { flex: 1; overflow-y: auto; padding: 12px 18px 16px; max-width: 640px; width: 100%; margin: 0 auto; touch-action: pan-y; }
+#caddie .ctop { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 14px; font-weight: 600; }
+#caddie .cnum { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
+#caddie .cnum b { font-size: 104px; line-height: 0.95; letter-spacing: -0.05em; font-weight: 780; font-variant-numeric: tabular-nums; }
+#caddie .cnum span { font-size: 22px; font-weight: 700; color: var(--muted); display: flex; flex-direction: column; }
+#caddie .cnum small { font-size: 15px; font-weight: 600; }
+#caddie .cwhy { color: var(--muted); font-size: 15px; }
+#caddie .cends { display: flex; gap: 22px; font-size: 19px; margin: 8px 0 10px; color: var(--muted); }
+#caddie .cends b { color: var(--ink); font-size: 24px; }
+#caddie .cclub { font-size: 24px; font-weight: 750; line-height: 1.2; margin: 6px 0 8px; }
+#caddie .miss { font-size: 18px; line-height: 1.35; margin: 6px 0; }
+#caddie .cline { font-size: 17px; line-height: 1.4; padding: 10px 0; border-top: 1px solid var(--line); }
+#caddie .cline > span:first-child { display: block; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+#caddie .cbar { display: flex; gap: 10px; align-items: flex-end; padding: 10px 14px calc(var(--safe-b) + 10px); border-top: 1px solid var(--line); background: var(--panel); max-width: 640px; width: 100%; margin: 0 auto; }
+#caddie .cbar > div { flex: none; }
+#caddie .cbar .grow { flex: 1; }
+#caddie .cbar .btn { flex: 1; min-height: 52px; font-size: 16px; }
+#caddie .cbar .stepper.big b { min-width: 28px; }
+#viewbtns .cardbtn { background: #ffffff; color: #17221b; }
+#caddie .stepper.big button { background: var(--chip); }
+#caddie .cbar { justify-content: space-between; border-top: 1px solid var(--line); padding-bottom: 6px; }
+#caddie .cbar2 { padding: 0 14px calc(var(--safe-b) + 10px); max-width: 640px; width: 100%; margin: 0 auto; background: var(--panel); }
+#caddie .cbar2 .btn { min-height: 54px; font-size: 17px; }
