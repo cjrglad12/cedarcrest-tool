@@ -83,8 +83,8 @@ export interface Round {
 }
 
 export type TeeSet = 'black' | 'gold' | 'silver' | 'ruby';
-export type CourseKey = 'cedar' | 'sherrill1' | 'sherrill2' | 'waterchase';
-export const COURSE_KEYS: CourseKey[] = ['cedar', 'sherrill1', 'sherrill2', 'waterchase'];
+export type CourseKey = 'cedar' | 'sherrill1' | 'sherrill2' | 'waterchase' | 'tangle';
+export const COURSE_KEYS: CourseKey[] = ['cedar', 'sherrill1', 'sherrill2', 'waterchase', 'tangle'];
 const courseKey = (v: unknown): CourseKey => (COURSE_KEYS.includes(v as CourseKey) ? (v as CourseKey) : 'cedar');
 
 export interface Settings {

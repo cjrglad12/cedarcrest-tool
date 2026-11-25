@@ -16,6 +16,10 @@ const CONFIGS = {
     name: 'Waterchase', match: { way: '28382130' }, out: '../public/data/waterchase/', overrides: './waterchase-overrides.json',
     search: { minLon: -97.174, minLat: 32.745, maxLon: -97.126, maxLat: 32.793 },
   },
+  tangle: {
+    name: 'Tangle Ridge', match: { way: '480089940' }, out: '../public/data/tangle/', overrides: './tangle-overrides.json',
+    search: { minLon: -97.028, minLat: 32.558, maxLon: -97.008, maxLat: 32.572 },
+  },
 };
 const CFG = CONFIGS[process.argv[2] ?? 'cedar'];
 if (!CFG) throw new Error(`Unknown course ${process.argv[2]}`);
