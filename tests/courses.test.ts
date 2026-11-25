@@ -78,6 +78,7 @@ describe('tees are remembered per course', () => {
   });
   it('keeps Waterchase as a course choice after reload', () => {
     expect(migrate({ settings: { courseId: 'waterchase' } } as never).settings.courseId).toBe('waterchase');
+    expect(migrate({ settings: { courseId: 'tangle' } } as never).settings.courseId).toBe('tangle');
     expect(migrate({ settings: { courseId: 'nowhere' } } as never).settings.courseId).toBe('cedar');
   });
 });

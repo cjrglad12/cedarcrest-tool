@@ -6,7 +6,7 @@ import type { TeeSet } from './store';
  * Sherrill Park yardages are the pro-shop card. Ratings are the published men's tees
  * where a men's number is printed. Sherrill 2 forward uses the published forward rating.
  */
-export type CourseId = 'cedar' | 'sherrill1' | 'sherrill2' | 'waterchase';
+export type CourseId = 'cedar' | 'sherrill1' | 'sherrill2' | 'waterchase' | 'tangle';
 
 export interface Plate {
   name: string;
@@ -162,6 +162,38 @@ export const COURSES: CourseCard[] = [
       [3, 18, 168, 154, 132, 123],
       [4, 2, 479, 460, 421, 393],
       [5, 8, 565, 552, 543, 486],
+    ]),
+  },
+  {
+    id: 'tangle',
+    name: 'Tangle Ridge',
+    path: 'data/tangle/',
+    source: 'Tangle Ridge card from the GolfPass listing (not checked against a printed card). Gold 73.4/133 (18Birdies says 73.6/136), Blue 70.8/128, White 69.0/125, Red 66.3/108.',
+    meta: {
+      black: { name: 'Gold', rating: 73.4, slope: 133 },
+      gold: { name: 'Blue', rating: 70.8, slope: 128 },
+      silver: { name: 'White', rating: 69.0, slope: 125 },
+      ruby: { name: 'Red', rating: 66.3, slope: 108 },
+    },
+    rows: rows([
+      [4, 7, 469, 429, 392, 349],
+      [4, 9, 407, 376, 353, 301],
+      [4, 13, 378, 330, 309, 261],
+      [3, 17, 132, 111, 105, 83],
+      [5, 5, 545, 514, 492, 453],
+      [4, 11, 313, 293, 270, 228],
+      [4, 3, 444, 406, 383, 326],
+      [5, 1, 575, 550, 529, 468],
+      [3, 15, 152, 129, 120, 105],
+      [4, 12, 438, 399, 370, 341],
+      [4, 14, 338, 319, 297, 254],
+      [3, 18, 168, 141, 120, 101],
+      [5, 8, 501, 476, 455, 377],
+      [4, 4, 384, 368, 353, 314],
+      [4, 2, 457, 422, 405, 371],
+      [4, 10, 424, 403, 377, 292],
+      [3, 16, 189, 172, 153, 136],
+      [5, 6, 521, 499, 486, 427],
     ]),
   },
 ];
