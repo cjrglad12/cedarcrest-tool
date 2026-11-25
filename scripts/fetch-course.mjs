@@ -17,6 +17,7 @@ const CONFIGS = {
     search: { minLon: -97.174, minLat: 32.745, maxLon: -97.126, maxLat: 32.793 },
   },
 };
+if (process.env.TANGLE) CONFIGS.tangle = { name: 'Tangle Ridge', out: '../public/data/tangle/', overrides: './tangle-overrides.json', ...JSON.parse(process.env.TANGLE) };
 const CFG = CONFIGS[process.argv[2] ?? 'cedar'];
 if (!CFG) throw new Error(`Unknown course ${process.argv[2]}`);
 const COURSE_NAME = CFG.match.name;
